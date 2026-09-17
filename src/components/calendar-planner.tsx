@@ -15,7 +15,10 @@ function keyFor(year: number, month: number, day: number) {
   return year + "-" + String(month + 1).padStart(2, "0") + "-" + String(day).padStart(2, "0");
 }
 
-function SelectionSummary({ status, days, start, end }: { status: RuleStatus; days: number; start: string | null; end: string | null }) {
+function SelectionSummary({ status, days, start, end, planning }: { status: RuleStatus; days: number; start: string | null; end: string | null; planning: boolean }) {
+  if (!planning) {
+    return <div className="planner-guidance idle"><span className="guidance-step">1</span><p><strong>Toque em uma data para planejar</strong><small>O calendário mostra seus períodos e calcula o próximo automaticamente.</small></p></div>;
+  }
   if (!start) {
     return <div className="planner-guidance"><span className="guidance-step active">1</span><p><strong>Comece pelo primeiro dia</strong><small>Toque em uma data no calendário para marcar sua entrada.</small></p></div>;
   }
@@ -30,6 +33,7 @@ export function CalendarPlanner({ trips, rules, onOpen, onSave }: CalendarPlanne
   const [month, setMonth] = useState(new Date(isoToday() + "T12:00:00Z"));
   const [region, setRegion] = useState<Region>("brazil");
   const [country, setCountry] = useState("Brazil");
+  const [planning, setPlanning] = useState(false);
   const activeRule = rules.find((item) => item.region === region) || rules[0];
   const [start, setStart] = useState<string | null>(null);
   const [end, setEnd] = useState<string | null>(null);
@@ -58,9 +62,15 @@ export function CalendarPlanner({ trips, rules, onOpen, onSave }: CalendarPlanne
     setEnd(date);
   }
 
+  function startPlanning(date?: string) {
+    setPlanning(true);
+    if (date) chooseDay(date);
+  }
+
   function clearSelection() {
     setStart(null);
     setEnd(null);
+    setPlanning(false);
   }
 
   function saveSelection() {
@@ -74,13 +84,13 @@ export function CalendarPlanner({ trips, rules, onOpen, onSave }: CalendarPlanne
       <div className="planner-region">
         <span className="planner-label">Planejar em</span>
         <div className="segmented">
-          <button className={region === "brazil" ? "selected" : ""} onClick={() => { setRegion("brazil"); setCountry("Brazil"); }}>Brasil</button>
-          <button className={region === "schengen" ? "selected" : ""} onClick={() => { setRegion("schengen"); setCountry("Italy"); }}>Schengen</button>
+          <button className={region === "brazil" ? "selected" : ""} onClick={() => { setRegion("brazil"); setCountry("Brazil"); clearSelection(); }}>Brasil</button>
+          <button className={region === "schengen" ? "selected" : ""} onClick={() => { setRegion("schengen"); setCountry("Italy"); clearSelection(); }}>Schengen</button>
         </div>
       </div>
-      <button className="button secondary planner-clear" onClick={clearSelection} disabled={!start}>Limpar seleção</button>
+      <button className={"button " + (planning ? "secondary" : "primary") + " planner-clear"} onClick={() => planning ? clearSelection() : startPlanning()}>{planning ? "Cancelar" : "Planejar viagem"}</button>
     </div>
-    <SelectionSummary status={status} days={selectedDays} start={start} end={end} />
+    <SelectionSummary status={status} days={selectedDays} start={start} end={end} planning={planning} />
     <section className="calendar-card planner-calendar">
       <div className="calendar-header"><button className="circle-button" aria-label="Mês anterior" onClick={() => setMonth(new Date(Date.UTC(year, monthIndex - 1, 1)))}>‹</button><h3>{monthLabel}</h3><button className="circle-button" aria-label="Próximo mês" onClick={() => setMonth(new Date(Date.UTC(year, monthIndex + 1, 1)))}>›</button></div>
       <div className="weekday-row">{["seg", "ter", "qua", "qui", "sex", "sáb", "dom"].map((day) => <span key={day}>{day}</span>)}</div>
@@ -91,15 +101,15 @@ export function CalendarPlanner({ trips, rules, onOpen, onSave }: CalendarPlanne
         const startMark = date && selectedStart === date;
         const endMark = date && selectedEnd === date;
         const className = "calendar-day planner-day " + (existingTrip ? "has-trip " + existingTrip.region : "") + (selected ? " selected-range" : "") + (startMark ? " selected-start" : "") + (endMark ? " selected-end" : "");
-        return <button key={index} disabled={!day} aria-label={date ? formatDate(date, { day: "numeric", month: "long", year: "numeric" }) : undefined} className={className} onClick={() => date && (existingTrip && !start ? onOpen(existingTrip) : chooseDay(date))}>{day}<span className="day-dot" /></button>;
+        return <button key={index} disabled={!day} aria-label={date ? formatDate(date, { day: "numeric", month: "long", year: "numeric" }) : undefined} className={className} onClick={() => { if (!date) return; if (!planning && existingTrip) { onOpen(existingTrip); return; } if (!planning) startPlanning(date); else chooseDay(date); }}>{day}<span className="day-dot" /></button>;
       })}</div>
       <div className="calendar-legend"><span><i className="legend-dot selected-legend" />Sua seleção</span><span><i className="legend-dot brazil" />Brasil</span><span><i className="legend-dot schengen" />Schengen</span></div>
     </section>
     <div className="planner-footer">
       <div><span className="planner-label">Período escolhido</span><strong>{selectedStart && selectedEnd ? formatDate(selectedStart) + " — " + formatDate(selectedEnd) : "Selecione duas datas"}</strong></div>
-      <button className="button primary" onClick={saveSelection} disabled={!selectedStart || !selectedEnd}>Salvar período</button>
+      <button className="button primary" onClick={saveSelection} disabled={!planning || !selectedStart || !selectedEnd}>Salvar viagem</button>
     </div>
-    <div className="planner-help"><strong>Você está no controle:</strong> o calendário guia a seleção e recalcula os dias restantes no mesmo instante. Para editar uma viagem existente, toque em uma data colorida quando não estiver selecionando.</div>
+    <div className="planner-help"><strong>Como funciona:</strong> uma data começa a viagem, a segunda termina. As duas datas contam.</div>
     <section className="list-section planner-existing"><div className="section-heading small"><div><p className="eyebrow">PERÍODOS REGISTRADOS</p><h2>Toque para editar</h2></div><span className="count-label">{trips.length} períodos</span></div><div className="trip-list">{trips.slice(0, 6).map((trip) => <button className="trip-row" key={trip.id} onClick={() => onOpen(trip)}><span className={"region-marker " + trip.region} /><span className="trip-dates"><strong>{formatDate(trip.start)} — {formatDate(trip.end)}</strong><small>{trip.country} · {inclusiveDays(trip.start, trip.end)} dias</small></span><span className="row-chevron">→</span></button>)}</div></section>
   </div>;
 }
