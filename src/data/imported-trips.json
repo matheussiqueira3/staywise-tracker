@@ -1,0 +1,82 @@
+[
+  {
+    "id": "import-brazil-001",
+    "region": "brazil",
+    "country": "Brazil",
+    "start": "2024-08-05",
+    "end": "2024-08-15",
+    "notes": "Importado da planilha original"
+  },
+  {
+    "id": "import-brazil-002",
+    "region": "brazil",
+    "country": "Brazil",
+    "start": "2024-10-04",
+    "end": "2024-10-14",
+    "notes": "Importado da planilha original"
+  },
+  {
+    "id": "import-brazil-003",
+    "region": "brazil",
+    "country": "Brazil",
+    "start": "2024-12-01",
+    "end": "2024-12-27",
+    "notes": "Importado da planilha original"
+  },
+  {
+    "id": "import-brazil-004",
+    "region": "brazil",
+    "country": "Brazil",
+    "start": "2025-01-02",
+    "end": "2025-02-20",
+    "notes": "Importado da planilha original"
+  },
+  {
+    "id": "import-brazil-005",
+    "region": "brazil",
+    "country": "Brazil",
+    "start": "2025-05-06",
+    "end": "2025-05-12",
+    "notes": "Importado da planilha original"
+  },
+  {
+    "id": "import-brazil-006",
+    "region": "brazil",
+    "country": "Brazil",
+    "start": "2025-08-05",
+    "end": "2025-10-12",
+    "notes": "Importado da planilha original"
+  },
+  {
+    "id": "import-brazil-007",
+    "region": "brazil",
+    "country": "Brazil",
+    "start": "2025-12-06",
+    "end": "2026-01-11",
+    "notes": "Importado da planilha original"
+  },
+  {
+    "id": "import-brazil-008",
+    "region": "brazil",
+    "country": "Brazil",
+    "start": "2026-03-22",
+    "end": "2026-05-25",
+    "notes": "Importado da planilha original"
+  },
+  {
+    "id": "import-brazil-009",
+    "region": "brazil",
+    "country": "Brazil",
+    "start": "2026-08-09",
+    "end": "2026-09-21",
+    "notes": "Importado da planilha original"
+  },
+  {
+    "id": "import-brazil-010",
+    "region": "brazil",
+    "country": "Brazil",
+    "start": "2026-11-08",
+    "end": "2026-12-31",
+    "notes": "Importado da planilha original"
+  }
+]

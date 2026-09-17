@@ -1,65 +1,48 @@
-import Image from "next/image";
+"use client";
+
+import { useEffect, useMemo, useState } from "react";
+import { seedState } from "@/data/seed";
+import { addDays, formatDate, formatFullDate, inclusiveDays, isoToday, statusFor, statusForDate } from "@/lib/rules";
+import { decodeState, encodeState } from "@/lib/share";
+import type { Region, RuleStatus, TrackerState, Trip } from "@/lib/types";
+
+type Tab = "overview" | "calendar" | "simulator" | "settings";
+const TABS = [["overview", "Visão geral", "▦"], ["calendar", "Calendário", "□"], ["simulator", "Simulador", "◈"], ["settings", "Configurações", "☷"]] as const;
+
+function StatusPill({ status }: { status: RuleStatus }) {
+  const label = status.status === "over" ? "Acima do limite" : status.status === "warning" ? "Atenção" : "Dentro da margem";
+  return <span className={"status-pill " + status.status}><span className="status-dot" />{label}</span>;
+}
+function RuleCard({ status }: { status: RuleStatus }) {
+  const percentage = Math.min(100, Math.round(status.used / status.rule.limit * 100));
+  return <article className="rule-card"><div className="rule-card-top"><div><span className="rule-kicker">{status.rule.id === "brazil" ? "Presença · Brasil" : "Estadia curta · Schengen"}</span><h3>{status.rule.label}</h3></div><StatusPill status={status} /></div><div className="rule-number"><strong>{status.used}</strong><span> / {status.rule.limit} dias</span></div><div className="progress-track"><span className={"progress-fill " + status.status} style={{ width: percentage + "%" }} /></div><div className="rule-meta"><span>Janela móvel de {status.rule.windowDays} dias</span><strong>{status.remaining} disponíveis</strong></div><p className="rule-footnote">Contando de {formatDate(status.windowStart)} até {formatDate(status.asOf)}.</p></article>;
+}
+function TripRow({ trip, onClick }: { trip: Trip; onClick: () => void }) {
+  const count = inclusiveDays(trip.start, trip.end);
+  return <button className="trip-row" onClick={onClick}><span className={"region-marker " + trip.region} /><span className="trip-dates"><strong>{formatDate(trip.start, { day: "2-digit", month: "short" })} — {formatDate(trip.end, { day: "2-digit", month: "short", year: "numeric" })}</strong><small>{trip.country} · {count} {count === 1 ? "dia" : "dias"}</small></span><span className="row-chevron">→</span></button>;
+}
+function EmptyState({ onAdd }: { onAdd: () => void }) { return <div className="empty-state"><div className="empty-icon">□</div><h3>Nenhuma viagem planejada</h3><p>Registre uma entrada e uma saída para começar a acompanhar seus dias.</p><button className="button primary" onClick={onAdd}>＋ Adicionar viagem</button></div>; }
 
 export default function Home() {
-  return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex min-h-screen w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
-    </div>
-  );
+  const [tab, setTab] = useState<Tab>("overview"); const [state, setState] = useState<TrackerState>(seedState); const [hydrated, setHydrated] = useState(false); const [toast, setToast] = useState(""); const [editing, setEditing] = useState<Trip | null | false>(false); const today = isoToday();
+  useEffect(() => { const shared = window.location.hash ? decodeState(window.location.hash.slice(1)) : null; const saved = window.localStorage.getItem("staywise-state"); const next = shared || (saved ? decodeState(saved) : null); window.queueMicrotask(() => { if (next) setState(next); setHydrated(true); }); }, []);
+  useEffect(() => { if (hydrated) window.localStorage.setItem("staywise-state", encodeState(state)); }, [state, hydrated]);
+  const statuses = useMemo(() => state.rules.map((rule) => statusFor(rule, state.trips, today)), [state, today]); const trips = useMemo(() => state.trips.slice().sort((a, b) => b.start.localeCompare(a.start)), [state.trips]); const upcoming = trips.filter((trip) => trip.end >= today).slice().reverse(); const risk = statuses.find((item) => item.status === "over") || statuses.find((item) => item.status === "warning");
+  function notify(message: string) { setToast(message); window.setTimeout(() => setToast(""), 3000); }
+  async function share() { const encoded = encodeState(state); window.history.replaceState(null, "", "#" + encoded); const url = window.location.origin + window.location.pathname + "#" + encoded; await navigator.clipboard?.writeText(url); notify("Link privado copiado"); }
+  function exportBackup() { const link = document.createElement("a"); link.href = URL.createObjectURL(new Blob([JSON.stringify(state, null, 2)], { type: "application/json" })); link.download = "staywise-backup.json"; link.click(); notify("Backup exportado"); }
+  function saveTrip(trip: Trip) { setState((current) => ({ ...current, trips: current.trips.some((item) => item.id === trip.id) ? current.trips.map((item) => item.id === trip.id ? trip : item) : current.trips.concat(trip) })); setEditing(false); notify("Viagem salva"); }
+  function removeTrip(id: string) { setState((current) => ({ ...current, trips: current.trips.filter((trip) => trip.id !== id) })); setEditing(false); notify("Viagem removida"); }
+  const openNew = () => setEditing(null);
+  return <div className="app-shell"><header className="topbar"><div className="brand"><span className="brand-mark">S</span><span>staywise</span></div><div className="topbar-actions"><span className="sync-label"><i className="sync-dot" />Sincronizado hoje</span><button className="icon-button" aria-label="Copiar link privado" onClick={share}>↗</button></div></header><main className="content-wrap"><section className="welcome"><div><p className="eyebrow">CONTROLE DE PERMANÊNCIA</p><h1>Bom dia, Andrew.</h1><p className="welcome-copy">Seu mapa de dias está sob controle.</p></div><div className="today-chip">{formatFullDate(today)}</div></section>{risk && <button className={"alert-banner " + risk.status} onClick={() => setTab("overview")}><span className="alert-icon">!</span><span><strong>{risk.rule.label}: {risk.status === "over" ? "limite ultrapassado" : "você está se aproximando do limite"}</strong><small>{risk.used} de {risk.rule.limit} dias usados na janela atual.</small></span><b>→</b></button>}<div className="tab-panel">{TABS.map(([id, label, icon]) => <button key={id} className={"tab " + (tab === id ? "active" : "")} onClick={() => setTab(id)}><span className="tab-icon">{icon}</span>{label}</button>)}</div>{tab === "overview" && <Overview statuses={statuses} trips={trips} upcoming={upcoming} onAdd={openNew} onOpen={setEditing} />}{tab === "calendar" && <CalendarView trips={trips} onAdd={openNew} onOpen={setEditing} />}{tab === "simulator" && <Simulator state={state} today={today} onAdd={saveTrip} />}{tab === "settings" && <Settings state={state} onChange={setState} onShare={share} onExport={exportBackup} />}</main><nav className="bottom-nav">{TABS.map(([id, label, icon]) => <button key={id} className={tab === id ? "active" : ""} onClick={() => setTab(id)}><span>{icon}</span>{label}</button>)}</nav>{editing !== false && <TripModal trip={editing} onClose={() => setEditing(false)} onSave={saveTrip} onDelete={editing ? removeTrip : undefined} />}{toast && <div className="toast" role="status">✓ {toast}</div>}</div>;
 }
+
+function Overview({ statuses, trips, upcoming, onAdd, onOpen }: { statuses: RuleStatus[]; trips: Trip[]; upcoming: Trip[]; onAdd: () => void; onOpen: (trip: Trip) => void }) { return <div className="view-stack"><div className="section-heading"><div><p className="eyebrow">STATUS AGORA</p><h2>Seu panorama</h2></div><button className="button primary" onClick={onAdd}>＋ <span>Nova viagem</span></button></div><div className="rule-grid">{statuses.map((status) => <RuleCard key={status.rule.id} status={status} />)}</div><div className="overview-grid"><section><div className="section-heading small"><div><p className="eyebrow">LINHA DO TEMPO</p><h2>Próximas viagens</h2></div><button className="text-button" onClick={onAdd}>Adicionar →</button></div>{upcoming.length ? <div className="trip-list">{upcoming.slice(0, 5).map((trip) => <TripRow key={trip.id} trip={trip} onClick={() => onOpen(trip)} />)}</div> : <EmptyState onAdd={onAdd} />}</section><aside className="insight-card"><span className="insight-icon">◈</span><p className="eyebrow">LEITURA RÁPIDA</p><h3>{trips.length} períodos registrados</h3><p>O histórico da planilha já está no app. Use o simulador antes de confirmar sua próxima passagem.</p><button className="text-button" onClick={onAdd}>Registrar período →</button></aside></div></div>; }
+
+function CalendarView({ trips, onAdd, onOpen }: { trips: Trip[]; onAdd: () => void; onOpen: (trip: Trip) => void }) { const [month, setMonth] = useState(new Date(isoToday() + "T12:00:00Z")); const year = month.getUTCFullYear(); const monthIndex = month.getUTCMonth(); const first = new Date(Date.UTC(year, monthIndex, 1)); const days = new Date(Date.UTC(year, monthIndex + 1, 0)).getUTCDate(); const offset = (first.getUTCDay() + 6) % 7; const cells = Array.from({ length: offset + days }, (_, index) => index < offset ? null : index - offset + 1); function findTrip(day: number) { const key = year + "-" + String(monthIndex + 1).padStart(2, "0") + "-" + String(day).padStart(2, "0"); return trips.find((trip) => trip.start <= key && trip.end >= key); } return <div className="view-stack"><div className="section-heading"><div><p className="eyebrow">EVIDÊNCIA</p><h2>Calendário de presença</h2></div><button className="button primary" onClick={onAdd}>＋ <span>Nova viagem</span></button></div><section className="calendar-card"><div className="calendar-header"><button className="circle-button" aria-label="Mês anterior" onClick={() => setMonth(new Date(Date.UTC(year, monthIndex - 1, 1)))}>‹</button><h3>{new Intl.DateTimeFormat("pt-BR", { month: "long", year: "numeric" }).format(first)}</h3><button className="circle-button" aria-label="Próximo mês" onClick={() => setMonth(new Date(Date.UTC(year, monthIndex + 1, 1)))}>›</button></div><div className="weekday-row">{["seg", "ter", "qua", "qui", "sex", "sáb", "dom"].map((day) => <span key={day}>{day}</span>)}</div><div className="calendar-grid">{cells.map((day, index) => { const trip = day ? findTrip(day) : null; return <button key={index} disabled={!day} className={"calendar-day " + (trip ? "has-trip " + trip.region : "")} onClick={() => trip && onOpen(trip)}>{day}<span className="day-dot" /></button>; })}</div><div className="calendar-legend"><span><i className="legend-dot brazil" />Brasil</span><span><i className="legend-dot schengen" />Schengen</span><span><i className="legend-dot other" />Outro</span></div></section><section className="list-section"><div className="section-heading small"><div><p className="eyebrow">HISTÓRICO</p><h2>Todos os períodos</h2></div><span className="count-label">{trips.length} períodos</span></div><div className="trip-list">{trips.map((trip) => <TripRow key={trip.id} trip={trip} onClick={() => onOpen(trip)} />)}</div></section></div>; }
+
+function Simulator({ state, today, onAdd }: { state: TrackerState; today: string; onAdd: (trip: Trip) => void }) { const [region, setRegion] = useState<Region>("brazil"); const [country, setCountry] = useState("Brazil"); const [start, setStart] = useState(addDays(today, 7)); const [end, setEnd] = useState(addDays(today, 21)); const rule = state.rules.find((item) => item.region === region) || state.rules[0]; const projected = statusForDate(rule, state.trips.concat({ id: "simulation", region, country, start, end }), end); const current = statusForDate(rule, state.trips, addDays(start, -1)); const days = start && end && end >= start ? inclusiveDays(start, end) : 0; const safe = projected.remaining > 0 && projected.status !== "over"; function choose(value: Region) { setRegion(value); setCountry(value === "brazil" ? "Brazil" : "Italy"); } return <div className="view-stack"><div className="section-heading"><div><p className="eyebrow">PLANEJE ANTES DE IR</p><h2>Simulador de viagem</h2></div><span className="simulation-badge">Não salva até confirmar</span></div><div className="simulator-layout"><section className="simulator-form"><div className="field-group"><label>Região monitorada</label><div className="segmented"><button className={region === "brazil" ? "selected" : ""} onClick={() => choose("brazil")}>Brasil</button><button className={region === "schengen" ? "selected" : ""} onClick={() => choose("schengen")}>Schengen</button></div></div><div className="field-group"><label htmlFor="sim-country">País</label><select id="sim-country" value={country} onChange={(event) => setCountry(event.target.value)}><option>Brazil</option><option>Italy</option><option>Portugal</option><option>Spain</option><option>France</option><option>Germany</option><option>Switzerland</option><option>Other Schengen</option></select></div><div className="date-fields"><div className="field-group"><label htmlFor="sim-start">Entrada</label><input id="sim-start" type="date" value={start} onChange={(event) => setStart(event.target.value)} /></div><div className="field-group"><label htmlFor="sim-end">Saída</label><input id="sim-end" type="date" value={end} onChange={(event) => setEnd(event.target.value)} /></div></div><p className="simulator-note">Entrada e saída contam como dias de permanência.</p></section><section className={"simulation-result " + (safe ? "safe" : "danger")}><div className="result-orbit">{safe ? "✓" : "!"}</div><p className="eyebrow">RESULTADO PROJETADO</p><h3>{safe ? "Parece seguro" : "Revise esse plano"}</h3><p>{safe ? "A viagem usa " + days + " dias e deixa margem no limite de " + rule.label + "." : "Essa viagem deixa o limite de " + rule.label + " sem margem suficiente."}</p><div className="result-metrics"><div><strong>{projected.used}</strong><span>dias usados</span></div><div><strong>{projected.remaining}</strong><span>dias restantes</span></div></div><div className="result-bar"><span style={{ width: Math.min(100, Math.round(projected.used / rule.limit * 100)) + "%" }} /></div><small>Antes da viagem: {current.used} dias · Regra {rule.limit}/{rule.windowDays}</small><button className="button primary full" onClick={() => onAdd({ id: "trip-" + Date.now(), region, country, start, end })}>Adicionar ao calendário</button></section></div><p className="simulator-hint"><strong>Como ler:</strong> a janela olha para trás a partir do último dia da viagem. Dias antigos saem da conta automaticamente conforme o tempo passa.</p></div>; }
+
+function Settings({ state, onChange, onShare, onExport }: { state: TrackerState; onChange: (state: TrackerState) => void; onShare: () => void; onExport: () => void }) { return <div className="view-stack"><div className="section-heading"><div><p className="eyebrow">AJUSTES DO WORKSPACE</p><h2>Configurações</h2></div></div><section className="settings-section"><div className="settings-heading"><h3>Regras de permanência</h3><p>Os limites são parâmetros de controle, não uma avaliação jurídica.</p></div>{state.rules.map((rule) => <div className="rule-setting" key={rule.id}><div><strong>{rule.label}</strong><span>Janela móvel em dias</span></div><div className="setting-inputs"><label><span>Limite</span><input type="number" value={rule.limit} onChange={(event) => onChange({ ...state, rules: state.rules.map((item) => item.id === rule.id ? { ...item, limit: Number(event.target.value) } : item) })} /></label><b>/</b><label><span>Janela</span><input type="number" value={rule.windowDays} onChange={(event) => onChange({ ...state, rules: state.rules.map((item) => item.id === rule.id ? { ...item, windowDays: Number(event.target.value) } : item) })} /></label></div></div>)}</section><section className="settings-section"><div className="settings-heading"><h3>Dados e sincronização</h3><p>O link compartilhado carrega os dados no fragmento da URL e não os envia para o servidor.</p></div><div className="settings-actions"><button className="button secondary" onClick={onShare}>↗ Copiar link privado</button><button className="button secondary" onClick={onExport}>↓ Exportar backup</button></div></section><section className="legal-note"><strong>Nota importante</strong><p>Este app calcula dias com base nos registros informados. Residência fiscal, imigração, domicílio e obrigações tributárias dependem de outros fatos e devem ser confirmados com um profissional qualificado.</p></section></div>; }
+
+function TripModal({ trip, onClose, onSave, onDelete }: { trip: Trip | null; onClose: () => void; onSave: (trip: Trip) => void; onDelete?: (id: string) => void }) { const [region, setRegion] = useState<Region>(trip?.region || "brazil"); const [country, setCountry] = useState(trip?.country || "Brazil"); const [start, setStart] = useState(trip?.start || isoToday()); const [end, setEnd] = useState(trip?.end || isoToday()); const [notes, setNotes] = useState(trip?.notes || ""); const invalid = !start || !end || end < start; function choose(value: Region) { setRegion(value); setCountry(value === "brazil" ? "Brazil" : value === "schengen" ? "Italy" : "Other"); } return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="modal" role="dialog" aria-modal="true" aria-labelledby="trip-title"><div className="modal-header"><div><p className="eyebrow">{trip ? "EDITAR PERÍODO" : "NOVO PERÍODO"}</p><h2 id="trip-title">Registrar viagem</h2></div><button className="circle-button" onClick={onClose} aria-label="Fechar">×</button></div><div className="modal-fields"><div className="field-group"><label>Região</label><div className="segmented three"><button className={region === "brazil" ? "selected" : ""} onClick={() => choose("brazil")}>Brasil</button><button className={region === "schengen" ? "selected" : ""} onClick={() => choose("schengen")}>Schengen</button><button className={region === "other" ? "selected" : ""} onClick={() => choose("other")}>Outro</button></div></div><div className="field-group"><label htmlFor="trip-country">País</label><input id="trip-country" value={country} onChange={(event) => setCountry(event.target.value)} /></div><div className="date-fields"><div className="field-group"><label htmlFor="trip-start">Entrada</label><input id="trip-start" type="date" value={start} onChange={(event) => setStart(event.target.value)} /></div><div className="field-group"><label htmlFor="trip-end">Saída</label><input id="trip-end" type="date" value={end} onChange={(event) => setEnd(event.target.value)} /></div></div><div className="field-group"><label htmlFor="trip-notes">Observação <span>(opcional)</span></label><textarea id="trip-notes" value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Ex.: visita à família" rows={3} /></div>{invalid && <p className="field-error" role="alert">A saída precisa ser igual ou posterior à entrada.</p>}</div><div className="modal-actions">{onDelete && trip && <button className="text-button danger-text" onClick={() => onDelete(trip.id)}>Excluir</button>}<span /><button className="button secondary" onClick={onClose}>Cancelar</button><button className="button primary" disabled={invalid} onClick={() => onSave({ id: trip?.id || "trip-" + Date.now(), region, country, start, end, notes })}>Salvar período</button></div></section></div>; }
