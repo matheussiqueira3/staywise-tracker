@@ -8,6 +8,7 @@ import type { Region, TrackerState, Trip } from "@/lib/types";
 import { CalendarPlanner } from "@/components/calendar-planner";
 import "./planner.css";
 import "./undo.css";
+import "./annual-planner.css";
 
 type Tab = "calendar" | "history" | "more";
 const TABS = [["calendar", "Calendário", "□"], ["history", "Histórico", "▦"], ["more", "Mais", "☷"]] as const;
