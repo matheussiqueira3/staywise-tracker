@@ -1,0 +1,20 @@
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.toast-undo {
+  border: 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.75);
+  background: transparent;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 800;
+  padding: 2px 0;
+}
+
+.toast-undo:hover {
+  color: #b3e1d1;
+  border-color: #b3e1d1;
+}

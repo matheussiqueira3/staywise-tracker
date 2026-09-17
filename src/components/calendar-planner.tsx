@@ -88,7 +88,7 @@ export function CalendarPlanner({ trips, rules, onOpen, onSave }: CalendarPlanne
           <button className={region === "schengen" ? "selected" : ""} onClick={() => { setRegion("schengen"); setCountry("Italy"); clearSelection(); }}>Schengen</button>
         </div>
       </div>
-      <button className={"button " + (planning ? "secondary" : "primary") + " planner-clear"} onClick={() => planning ? clearSelection() : startPlanning()}>{planning ? "Cancelar" : "Planejar viagem"}</button>
+      <button className={"button " + (planning ? "secondary" : "primary") + " planner-clear"} onClick={() => planning ? clearSelection() : startPlanning()}>{planning ? (start && end ? "Recomeçar" : "Cancelar") : "Planejar viagem"}</button>
     </div>
     <SelectionSummary status={status} days={selectedDays} start={start} end={end} planning={planning} />
     <section className="calendar-card planner-calendar">
@@ -109,7 +109,7 @@ export function CalendarPlanner({ trips, rules, onOpen, onSave }: CalendarPlanne
       <div><span className="planner-label">Período escolhido</span><strong>{selectedStart && selectedEnd ? formatDate(selectedStart) + " — " + formatDate(selectedEnd) : "Selecione duas datas"}</strong></div>
       <button className="button primary" onClick={saveSelection} disabled={!planning || !selectedStart || !selectedEnd}>Salvar viagem</button>
     </div>
-    <div className="planner-help"><strong>Como funciona:</strong> uma data começa a viagem, a segunda termina. As duas datas contam.</div>
+    <div className="planner-help"><strong>Como funciona:</strong> uma data começa a viagem, a segunda termina. As duas datas contam. Se errar, toque em “Recomeçar” ou edite o período depois.</div>
     <section className="list-section planner-existing"><div className="section-heading small"><div><p className="eyebrow">PERÍODOS REGISTRADOS</p><h2>Toque para editar</h2></div><span className="count-label">{trips.length} períodos</span></div><div className="trip-list">{trips.slice(0, 6).map((trip) => <button className="trip-row" key={trip.id} onClick={() => onOpen(trip)}><span className={"region-marker " + trip.region} /><span className="trip-dates"><strong>{formatDate(trip.start)} — {formatDate(trip.end)}</strong><small>{trip.country} · {inclusiveDays(trip.start, trip.end)} dias</small></span><span className="row-chevron">→</span></button>)}</div></section>
   </div>;
 }
