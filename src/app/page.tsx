@@ -27,8 +27,8 @@ function EmptyState({ onAdd }: { onAdd: () => void }) { return <div className="e
 
 export default function Home() {
   const [tab, setTab] = useState<Tab>("overview"); const [state, setState] = useState<TrackerState>(seedState); const [hydrated, setHydrated] = useState(false); const [toast, setToast] = useState(""); const [editing, setEditing] = useState<Trip | null | false>(false); const today = isoToday();
-  useEffect(() => { const shared = window.location.hash ? decodeState(window.location.hash.slice(1)) : null; const saved = window.localStorage.getItem("staywise-state"); const next = shared || (saved ? decodeState(saved) : null); window.queueMicrotask(() => { if (next) setState(next); setHydrated(true); }); }, []);
-  useEffect(() => { if (hydrated) window.localStorage.setItem("staywise-state", encodeState(state)); }, [state, hydrated]);
+  useEffect(() => { const shared = window.location.hash ? decodeState(window.location.hash.slice(1)) : null; const saved = window.localStorage.getItem("staywise-state-v2"); const next = shared || (saved ? decodeState(saved) : null); window.queueMicrotask(() => { if (next) setState(next); setHydrated(true); }); }, []);
+  useEffect(() => { if (hydrated) window.localStorage.setItem("staywise-state-v2", encodeState(state)); }, [state, hydrated]);
   const statuses = useMemo(() => state.rules.map((rule) => statusFor(rule, state.trips, today)), [state, today]); const trips = useMemo(() => state.trips.slice().sort((a, b) => b.start.localeCompare(a.start)), [state.trips]); const upcoming = trips.filter((trip) => trip.end >= today).slice().reverse(); const risk = statuses.find((item) => item.status === "over") || statuses.find((item) => item.status === "warning");
   function notify(message: string) { setToast(message); window.setTimeout(() => setToast(""), 3000); }
   async function share() { const encoded = encodeState(state); window.history.replaceState(null, "", "#" + encoded); const url = window.location.origin + window.location.pathname + "#" + encoded; await navigator.clipboard?.writeText(url); notify("Link privado copiado"); }
