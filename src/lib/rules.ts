@@ -20,7 +20,8 @@ export function daysInWindow(trips: Trip[], region: Region, start: string, end: 
   return occupied.size;
 }
 export function statusFor(rule: Rule, trips: Trip[], asOf: string): RuleStatus {
-  const safeRule = { ...rule, limit: Math.max(1, Math.floor(rule.limit) || 1), windowDays: Math.max(1, Math.floor(rule.windowDays) || 1), warningAt: Math.max(0, Math.floor(rule.warningAt) || 0) };
+  const limit = Math.max(1, Math.floor(rule.limit) || 1);
+  const safeRule = { ...rule, limit, windowDays: Math.max(1, Math.floor(rule.windowDays) || 1), warningAt: Math.min(limit, Math.max(0, Math.floor(rule.warningAt) || 0)) };
   const windowStart = addDays(asOf, -(safeRule.windowDays - 1));
   const used = daysInWindow(trips, safeRule.region, windowStart, asOf);
   const remaining = Math.max(0, safeRule.limit - used);
