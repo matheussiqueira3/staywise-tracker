@@ -23,13 +23,17 @@ function normalizeRule(value: unknown, fallback: Rule): Rule {
   const warningAt = typeof item.warningAt === "number" && Number.isFinite(item.warningAt) ? Math.min(limit, Math.max(0, Math.floor(item.warningAt))) : fallback.warningAt;
   return { ...fallback, label: typeof item.label === "string" && item.label.trim() ? item.label.trim() : fallback.label, limit, windowDays, warningAt };
 }
+export function normalizeState(value: unknown): TrackerState | null {
+  if (!value || typeof value !== "object") return null;
+  const parsed = value as { trips?: unknown; rules?: unknown };
+  if (!Array.isArray(parsed.trips) || !Array.isArray(parsed.rules)) return null;
+  const ruleById = new Map(parsed.rules.filter((rule): rule is { id: string } => Boolean(rule && typeof rule === "object" && "id" in rule && typeof rule.id === "string")).map((rule) => [rule.id, rule]));
+  const rules = DEFAULT_RULES.map((fallback) => normalizeRule(ruleById.get(fallback.id), fallback));
+  const trips = parsed.trips.map((trip, index) => normalizeTrip(trip, index)).filter((trip): trip is Trip => Boolean(trip));
+  return { trips, rules };
+}
 export function decodeState(value: string): TrackerState | null {
   try {
-    const parsed = JSON.parse(decode(value)) as { trips?: unknown; rules?: unknown };
-    if (!Array.isArray(parsed.trips) || !Array.isArray(parsed.rules)) return null;
-    const ruleById = new Map(parsed.rules.filter((rule): rule is { id: string } => Boolean(rule && typeof rule === "object" && "id" in rule && typeof rule.id === "string")).map((rule) => [rule.id, rule]));
-    const rules = DEFAULT_RULES.map((fallback) => normalizeRule(ruleById.get(fallback.id), fallback));
-    const trips = parsed.trips.map((trip, index) => normalizeTrip(trip, index)).filter((trip): trip is Trip => Boolean(trip));
-    return { trips, rules };
+    return normalizeState(JSON.parse(decode(value)));
   } catch { return null; }
 }
