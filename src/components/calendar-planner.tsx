@@ -8,7 +8,7 @@ type CalendarPlannerProps = { trips: Trip[]; rules: Rule[]; onOpen: (trip: Trip)
 const WEEKDAYS = ["seg", "ter", "qua", "qui", "sex", "sáb", "dom"];
 
 function keyFor(year: number, month: number, day: number) { return year + "-" + String(month + 1).padStart(2, "0") + "-" + String(day).padStart(2, "0"); }
-function monthTitle(year: number, month: number) { return new Intl.DateTimeFormat("pt-BR", { month: "long", timeZone: "UTC" }).format(new Date(Date.UTC(year, month, 1))); }
+function monthTitle(year: number, month: number) { return new Intl.DateTimeFormat("pt-BR", { month: "long", year: "numeric", timeZone: "UTC" }).format(new Date(Date.UTC(year, month, 1))); }
 function monthKey(value: string) { return value.slice(0, 7) + "-01"; }
 function nextMonth(value: string) { const date = new Date(value + "T12:00:00Z"); date.setUTCMonth(date.getUTCMonth() + 1); return date.toISOString().slice(0, 10); }
 function monthsInRange(start: string, end: string) { const months: string[] = []; for (let month = monthKey(start); month <= monthKey(end); month = nextMonth(month)) months.push(month); return months; }
@@ -42,7 +42,7 @@ export function CalendarPlanner({ trips, rules, onOpen, onSave }: CalendarPlanne
   const tripForDay = (date: string) => trips.find((trip) => trip.start <= date && trip.end >= date);
   const isSelected = (date: string) => Boolean(selectedStart && selectedEnd && date >= selectedStart && date <= selectedEnd);
   const isInWindow = (date: string) => date >= windowStart && date <= windowEnd;
-  function chooseDay(date: string) { if (!start || (start && end)) { setStart(date); setEnd(null); return; } setEnd(date); }
+  function chooseDay(date: string) { if (start && end && date >= selectedStart! && date <= selectedEnd!) { clearSelection(); return; } if (!start) { setStart(date); setEnd(null); return; } if (start && !end) { if (date === start) { clearSelection(); return; } setEnd(date); return; } setStart(date); setEnd(null); }
   function startPlanning(date?: string) { setPlanning(true); if (date) chooseDay(date); }
   function clearSelection() { setStart(null); setEnd(null); setPlanning(false); }
   function chooseRegion(value: Region, defaultCountry: string) { setRegion(value); setCountry(defaultCountry); clearSelection(); }
