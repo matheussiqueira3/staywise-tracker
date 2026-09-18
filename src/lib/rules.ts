@@ -10,18 +10,21 @@ export function addDays(value: string, amount: number): string { const date = pa
 export function inclusiveDays(start: string, end: string): number { return Math.max(0, Math.round((parseDate(end).getTime() - parseDate(start).getTime()) / 86400000) + 1); }
 export function overlaps(trip: Trip, start: string, end: string): boolean { return trip.start <= end && trip.end >= start; }
 export function daysInWindow(trips: Trip[], region: Region, start: string, end: string): number {
-  return trips.reduce((total, trip) => {
-    if (trip.region !== region || !overlaps(trip, start, end)) return total;
+  const occupied = new Set<string>();
+  for (const trip of trips) {
+    if (trip.region !== region || trip.start > trip.end || !overlaps(trip, start, end)) continue;
     const clippedStart = trip.start > start ? trip.start : start;
     const clippedEnd = trip.end < end ? trip.end : end;
-    return total + inclusiveDays(clippedStart, clippedEnd);
-  }, 0);
+    for (let date = clippedStart; date <= clippedEnd; date = addDays(date, 1)) occupied.add(date);
+  }
+  return occupied.size;
 }
 export function statusFor(rule: Rule, trips: Trip[], asOf: string): RuleStatus {
-  const windowStart = addDays(asOf, -(rule.windowDays - 1));
-  const used = daysInWindow(trips, rule.region, windowStart, asOf);
-  const remaining = Math.max(0, rule.limit - used);
-  return { rule, asOf, used, remaining, windowStart, status: used > rule.limit ? "over" : used >= rule.warningAt ? "warning" : "ok" };
+  const safeRule = { ...rule, limit: Math.max(1, Math.floor(rule.limit) || 1), windowDays: Math.max(1, Math.floor(rule.windowDays) || 1), warningAt: Math.max(0, Math.floor(rule.warningAt) || 0) };
+  const windowStart = addDays(asOf, -(safeRule.windowDays - 1));
+  const used = daysInWindow(trips, safeRule.region, windowStart, asOf);
+  const remaining = Math.max(0, safeRule.limit - used);
+  return { rule: safeRule, asOf, used, remaining, windowStart, status: used > safeRule.limit ? "over" : used >= safeRule.warningAt ? "warning" : "ok" };
 }
 export function statusForDate(rule: Rule, trips: Trip[], date: string): RuleStatus { return statusFor(rule, trips, date); }
 export function formatDate(value: string, options?: Intl.DateTimeFormatOptions): string { return new Intl.DateTimeFormat("pt-BR", options || { day: "2-digit", month: "short" }).format(parseDate(value)); }
