@@ -69,11 +69,13 @@ export function CalendarPlanner({ trips, rules, onOpen, onSave }: CalendarPlanne
     <div className="planner-toolbar">
       <div className="planner-region">
         <span className="planner-label">Região</span>
-        <div className="segmented" role="group" aria-label="Região">
+        <div className="segmented three" role="group" aria-label="Região">
           <button aria-pressed={region === "brazil"} className={(region === "brazil" ? "selected " : "") + "region-option brazil"} onClick={() => chooseRegion("brazil", "Brazil")}>Brasil</button>
           <button aria-pressed={region === "schengen"} className={(region === "schengen" ? "selected " : "") + "region-option schengen"} onClick={() => chooseRegion("schengen", "Italy")}>Schengen</button>
+          <button aria-pressed={region === "other"} className={(region === "other" ? "selected " : "") + "region-option other"} onClick={() => chooseRegion("other", "Other")}>Outro</button>
         </div>
       </div>
+      {region === "other" && <div className="country-input"><label htmlFor="country-name">País/Cidade</label><input id="country-name" placeholder="Ex: Tailândia" value={country} onChange={(e) => setCountry(e.target.value)} /></div>}
       {start && <button className="button secondary planner-clear" onClick={clearSelection}>Limpar</button>}
     </div>
     <div className="region-status-cards">
