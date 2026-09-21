@@ -31,3 +31,87 @@ export function statusForDate(rule: Rule, trips: Trip[], date: string): RuleStat
 export function formatDate(value: string, options?: Intl.DateTimeFormatOptions): string { return new Intl.DateTimeFormat("pt-BR", options || { day: "2-digit", month: "short" }).format(parseDate(value)); }
 export function formatFullDate(value: string): string { return formatDate(value, { day: "2-digit", month: "long", year: "numeric" }); }
 export function isoToday(): string { return toDateKey(new Date()); }
+
+export type TripAnalysis = {
+  safe: boolean;
+  firstWarningDate?: string;
+  firstOverDate?: string;
+  lastSafeDate?: string;
+  maxUsed: number;
+  maxUsedDate: string;
+};
+
+export type MaxSafeStay = {
+  start: string;
+  lastSafeDate: string | null;
+  daysAvailable: number;
+  firstOverDate?: string;
+};
+
+export function analyzeTrip(rule: Rule, trips: Trip[], region: Region, tripStart: string, tripEnd: string): TripAnalysis {
+  if (tripStart > tripEnd) return { safe: true, maxUsed: 0, maxUsedDate: tripStart };
+
+  let maxUsed = 0;
+  let maxUsedDate = tripStart;
+  let firstWarningDate: string | undefined;
+  let firstOverDate: string | undefined;
+
+  for (let currentEnd = tripStart; currentEnd <= tripEnd; currentEnd = addDays(currentEnd, 1)) {
+    const testTrip: Trip = { id: "analysis", region, country: "", start: tripStart, end: currentEnd };
+    const testTrips = [...trips, testTrip];
+    const status = statusFor(rule, testTrips, currentEnd);
+
+    if (status.used > maxUsed) {
+      maxUsed = status.used;
+      maxUsedDate = currentEnd;
+    }
+
+    if (status.status === "warning" && !firstWarningDate) {
+      firstWarningDate = currentEnd;
+    }
+
+    if (status.status === "over" && !firstOverDate) {
+      firstOverDate = currentEnd;
+    }
+  }
+
+  const lastSafeDate = firstOverDate ? addDays(firstOverDate, -1) : undefined;
+
+  return {
+    safe: !firstOverDate,
+    firstWarningDate,
+    firstOverDate,
+    lastSafeDate,
+    maxUsed,
+    maxUsedDate,
+  };
+}
+
+export function maxSafeStay(rule: Rule, trips: Trip[], region: Region, entryDate: string): MaxSafeStay {
+  const limit = Math.max(1, Math.floor(rule.limit) || 1);
+  let lastSafeDate: string | null = null;
+  let firstOverDate: string | undefined;
+
+  for (let day = 0; day <= 366; day++) {
+    const currentDate = addDays(entryDate, day);
+    const testTrip: Trip = { id: "maxstay", region, country: "", start: entryDate, end: currentDate };
+    const testTrips = [...trips, testTrip];
+    const status = statusFor(rule, testTrips, currentDate);
+
+    if (status.used <= limit) {
+      lastSafeDate = currentDate;
+    } else if (!firstOverDate) {
+      firstOverDate = currentDate;
+      break;
+    }
+  }
+
+  const daysAvailable = lastSafeDate ? inclusiveDays(entryDate, lastSafeDate) : 0;
+
+  return {
+    start: entryDate,
+    lastSafeDate,
+    daysAvailable,
+    firstOverDate,
+  };
+}
