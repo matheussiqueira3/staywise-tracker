@@ -44,7 +44,7 @@ export function CalendarPlanner({ trips, rules, onOpen, onSave }: CalendarPlanne
   const anchorDate = selectedEnd || selectedStart || isoToday();
   const windowStart = addDays(anchorDate, -(activeRule.windowDays - 1));
   const windowEnd = anchorDate;
-  const rollingMonths = monthsInRange(addDays(isoToday(), -180), addDays(isoToday(), 548));
+  const rollingMonths = monthsInRange(addDays(isoToday(), -1825), addDays(isoToday(), 1825));
   const previewTrip = selectedStart && selectedEnd ? { id: "calendar-preview", region, country, start: selectedStart, end: selectedEnd } : null;
   const status = statusForDate(activeRule, previewTrip ? trips.concat(previewTrip) : trips, anchorDate);
   const selectedDays = selectedStart && selectedEnd ? inclusiveDays(selectedStart, selectedEnd) : selectedStart ? 1 : 0;
@@ -96,7 +96,7 @@ export function CalendarPlanner({ trips, rules, onOpen, onSave }: CalendarPlanne
     <section className="annual-calendar" aria-label="Calendário de viagens">
       {rollingMonths.map((month) => {
         const date = new Date(month + "T12:00:00Z");
-        return <MonthCalendar key={month} year={date.getUTCFullYear()} month={date.getUTCMonth()} rangeStart={addDays(isoToday(), -180)} rangeEnd={addDays(isoToday(), 548)} today={today} trips={trips} selectedRegion={region} selectedStart={selectedStart} selectedEnd={selectedEnd} isSelected={isSelected} isInWindow={isInWindow} tripForDay={tripForDay} onDay={(date, trip) => { if (trip) onOpen(trip); else chooseDay(date); }} />;
+        return <MonthCalendar key={month} year={date.getUTCFullYear()} month={date.getUTCMonth()} rangeStart={addDays(isoToday(), -1825)} rangeEnd={addDays(isoToday(), 1825)} today={today} trips={trips} selectedRegion={region} selectedStart={selectedStart} selectedEnd={selectedEnd} isSelected={isSelected} isInWindow={isInWindow} tripForDay={tripForDay} onDay={(date, trip) => { if (trip) onOpen(trip); else chooseDay(date); }} />;
       })}
     </section>
     <div className="planner-footer">
