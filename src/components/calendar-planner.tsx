@@ -13,21 +13,17 @@ function monthKey(value: string) { return value.slice(0, 7) + "-01"; }
 function nextMonth(value: string) { const date = new Date(value + "T12:00:00Z"); date.setUTCMonth(date.getUTCMonth() + 1); return date.toISOString().slice(0, 10); }
 function monthsInRange(start: string, end: string) { const months: string[] = []; for (let month = monthKey(start); month <= monthKey(end); month = nextMonth(month)) months.push(month); return months; }
 
-function SelectionSummary({ status, days, start, end, planning, region }: { status: RuleStatus; days: number; start: string | null; end: string | null; planning: boolean; region: Region }) {
-  if (!planning) return <div className="planner-guidance idle"><span className="guidance-step">1</span><p><strong>Escolha uma data para começar</strong><small>Veja 360 dias antes e depois de hoje. Toque na entrada e depois na saída.</small></p></div>;
-  if (!start) return <div className="planner-guidance"><span className="guidance-step active">1</span><p><strong>Comece pela entrada</strong><small>Toque em qualquer dia do ano para marcar o início.</small></p></div>;
-  if (!end) return <div className="planner-guidance"><span className="guidance-step active">2</span><p><strong>Agora escolha a saída</strong><small>Você pode mudar de mês sem perder a primeira data.</small></p></div>;
+function SelectionSummary({ status, days, start }: { status: RuleStatus; days: number; start: string | null }) {
+  if (!start) return null;
   const safe = status.status !== "over" && status.remaining > 0;
-  return <div className={"planner-guidance complete " + (safe ? "safe" : "danger")}><span className="guidance-step">{safe ? "✓" : "!"}</span><p><strong>{days} {days === 1 ? "dia selecionado" : "dias selecionados"} em {region === "brazil" ? "Brasil" : "Schengen"}</strong><small>{safe ? status.remaining + " dias disponíveis na janela móvel depois desta viagem." : "A seleção ultrapassa a janela móvel. Você pode salvar e ajustar depois."}</small></p></div>;
+  return <div className={"planner-guidance " + (safe ? "safe" : "danger")}><strong>{days} {days === 1 ? "dia" : "dias"}</strong><small>{safe ? status.remaining + " dias disponíveis na janela." : "Excede o limite."}</small></div>;
 }
 
 export function CalendarPlanner({ trips, rules, onOpen, onSave }: CalendarPlannerProps) {
   const [region, setRegion] = useState<Region>("brazil");
   const [country, setCountry] = useState("Brazil");
-  const [planning, setPlanning] = useState(false);
   const [start, setStart] = useState<string | null>(null);
   const [end, setEnd] = useState<string | null>(null);
-  const [displayAnchor, setDisplayAnchor] = useState(isoToday);
   const [jumpMonth, setJumpMonth] = useState(monthKey(isoToday()));
   const activeRule = rules.find((item) => item.region === region) || rules[0];
   const selectedStart = start && end && start > end ? end : start;
@@ -35,9 +31,7 @@ export function CalendarPlanner({ trips, rules, onOpen, onSave }: CalendarPlanne
   const anchorDate = selectedEnd || selectedStart || isoToday();
   const windowStart = addDays(anchorDate, -(activeRule.windowDays - 1));
   const windowEnd = anchorDate;
-  const displayStart = addDays(displayAnchor, -360);
-  const displayEnd = addDays(displayAnchor, 360);
-  const rollingMonths = monthsInRange(displayStart, displayEnd);
+  const rollingMonths = monthsInRange(addDays(isoToday(), -180), addDays(isoToday(), 548));
   const previewTrip = selectedStart && selectedEnd ? { id: "calendar-preview", region, country, start: selectedStart, end: selectedEnd } : null;
   const status = statusForDate(activeRule, previewTrip ? trips.concat(previewTrip) : trips, anchorDate);
   const selectedDays = selectedStart && selectedEnd ? inclusiveDays(selectedStart, selectedEnd) : selectedStart ? 1 : 0;
@@ -45,25 +39,74 @@ export function CalendarPlanner({ trips, rules, onOpen, onSave }: CalendarPlanne
   const tripForDay = (date: string) => trips.find((trip) => trip.start <= date && trip.end >= date);
   const isSelected = (date: string) => Boolean(selectedStart && selectedEnd && date >= selectedStart && date <= selectedEnd);
   const isInWindow = (date: string) => date >= windowStart && date <= windowEnd;
-  function chooseDay(date: string) { if (start && end && date >= selectedStart! && date <= selectedEnd!) { clearSelection(); return; } if (!start) { setStart(date); setEnd(null); return; } if (start && !end) { if (date === start) { clearSelection(); return; } setEnd(date); return; } setStart(date); setEnd(null); }
-  function startPlanning(date?: string) { setPlanning(true); if (date) chooseDay(date); }
-  function clearSelection() { setStart(null); setEnd(null); setPlanning(false); }
+
+  function chooseDay(date: string) {
+    if (!start) { setStart(date); setEnd(null); return; }
+    if (start && !end) { if (date === start) { setStart(null); setEnd(null); return; } setEnd(date); return; }
+    setStart(date); setEnd(null);
+  }
+
+  function clearSelection() { setStart(null); setEnd(null); }
   function chooseRegion(value: Region, defaultCountry: string) { setRegion(value); setCountry(defaultCountry); clearSelection(); }
-  function shiftHorizon(amount: number) { const nextAnchor = addDays(displayAnchor, amount); setDisplayAnchor(nextAnchor); setJumpMonth(monthKey(nextAnchor)); }
-  function resetHorizon() { const nextAnchor = isoToday(); setDisplayAnchor(nextAnchor); setJumpMonth(monthKey(nextAnchor)); }
   function jumpToMonth(value: string) { setJumpMonth(value); document.getElementById("month-" + value.slice(0, 7))?.scrollIntoView({ behavior: "auto", block: "start" }); }
   function saveSelection() { if (!selectedStart || !selectedEnd) return; onSave({ id: "trip-" + Date.now(), region, country, start: selectedStart, end: selectedEnd }); clearSelection(); }
 
   return <div className="planner-shell">
-    <div className="planner-toolbar"><div className="planner-region"><span className="planner-label">Planejar em</span><div className="segmented" role="group" aria-label="Região da viagem"><button aria-pressed={region === "brazil"} className={(region === "brazil" ? "selected " : "") + "region-option brazil"} onClick={() => chooseRegion("brazil", "Brazil")}>Brasil</button><button aria-pressed={region === "schengen"} className={(region === "schengen" ? "selected " : "") + "region-option schengen"} onClick={() => chooseRegion("schengen", "Italy")}>Schengen</button></div></div><div className="rolling-controls" aria-label="Navegação do horizonte rolling"><button className="circle-button" aria-label="Horizonte anterior" onClick={() => shiftHorizon(-180)}>‹</button><div className="rolling-display" aria-label="Horizonte de 360 dias antes e depois da data central"><strong>Horizonte ±360 dias</strong><small>{formatDate(displayStart, { day: "2-digit", month: "short", year: "numeric" })} — {formatDate(displayEnd, { day: "2-digit", month: "short", year: "numeric" })}</small></div><button className="circle-button" aria-label="Próximo horizonte" onClick={() => shiftHorizon(180)}>›</button><button className="rolling-today" onClick={resetHorizon}>Hoje</button></div><button className={"button " + (planning ? "secondary" : "primary") + " planner-clear"} onClick={() => planning ? clearSelection() : startPlanning()}>{planning ? (start && end ? "Limpar seleção" : "Cancelar") : "Planejar viagem"}</button></div>
-    <div className="month-jump-row"><label htmlFor="month-jump">Ir direto para</label><select id="month-jump" aria-label="Ir direto para um mês" value={jumpMonth} onChange={(event) => jumpToMonth(event.target.value)}>{rollingMonths.map((month) => <option key={month} value={month}>{monthTitle(Number(month.slice(0, 4)), Number(month.slice(5, 7)) - 1)}</option>)}</select><span>O horizonte completo continua abaixo.</span></div>
-    <div className="calculation-strip"><div><span className="planner-label">{previewTrip ? "Dias projetados" : "Dias usados"} · {region === "brazil" ? "Brasil" : "Schengen"}</span><strong>{activeRule.windowDays} dias de janela</strong><small>{formatDate(windowStart, { day: "2-digit", month: "short", year: "numeric" })} — {formatDate(windowEnd, { day: "2-digit", month: "short", year: "numeric" })}{previewTrip ? " · inclui a seleção" : ""}</small></div><div className={"calculation-score " + status.status}><strong>{status.used}<small> / {activeRule.limit}</small></strong><span>{status.remaining > 0 ? status.remaining + " dias restantes" : status.status === "over" ? "limite ultrapassado" : "limite atingido"}</span><small>{previewTrip ? "após a viagem" : "dias usados na janela"}</small></div></div>
-    <SelectionSummary status={status} days={selectedDays} start={start} end={end} planning={planning} region={region} />
-    <div className="calendar-legend" aria-label="Legenda do calendário"><span><i className="legend-dot rolling" />Janela móvel</span><span><i className={"legend-dot selected-legend " + region} />Seleção: {region === "brazil" ? "Brasil" : "Schengen"}</span><span><i className="legend-dot brazil" />Período no Brasil</span><span><i className="legend-dot schengen" />Período em Schengen</span></div>
-    <section className="annual-calendar" aria-label={"Horizonte de 360 dias antes e depois da data central, de " + formatDate(displayStart, { day: "numeric", month: "long", year: "numeric" }) + " até " + formatDate(displayEnd, { day: "numeric", month: "long", year: "numeric" })}>{rollingMonths.map((month) => { const date = new Date(month + "T12:00:00Z"); return <MonthCalendar key={month} year={date.getUTCFullYear()} month={date.getUTCMonth()} rangeStart={displayStart} rangeEnd={displayEnd} today={today} trips={trips} selectedRegion={region} selectedStart={selectedStart} selectedEnd={selectedEnd} isSelected={isSelected} isInWindow={isInWindow} tripForDay={tripForDay} onDay={(date, trip) => { if (!planning && trip) onOpen(trip); else if (!planning) startPlanning(date); else chooseDay(date); }} />; })}</section>
-    <div className="planner-footer"><div><span className="planner-label">Período escolhido</span><strong>{selectedStart && selectedEnd ? formatDate(selectedStart, { day: "2-digit", month: "short", year: "numeric" }) + " — " + formatDate(selectedEnd, { day: "2-digit", month: "short", year: "numeric" }) : "Selecione duas datas"}</strong></div><button className="button primary" onClick={saveSelection} disabled={!planning || !selectedStart || !selectedEnd}>Salvar viagem</button></div>
-    <div className="planner-help"><strong>Como usar:</strong> o calendário mostra 360 dias antes e 360 depois da data central. Toque em uma entrada e depois em uma saída. A faixa verde/azul mostra a janela móvel usada no cálculo; os períodos existentes podem ser tocados para editar.</div>
-    <section className="list-section planner-existing"><div className="section-heading small"><div><p className="eyebrow">PERÍODOS REGISTRADOS</p><h2>Toque para editar</h2></div><span className="count-label">{trips.length} períodos</span></div><div className="trip-list">{trips.slice(0, 6).map((trip) => <button className="trip-row" key={trip.id} onClick={() => onOpen(trip)}><span className={"region-marker " + trip.region} /><span className="trip-dates"><strong>{formatDate(trip.start)} — {formatDate(trip.end)}</strong><small>{trip.country} · {inclusiveDays(trip.start, trip.end)} dias</small></span><span className="row-chevron">→</span></button>)}</div></section>
+    <div className="planner-toolbar">
+      <div className="planner-region">
+        <span className="planner-label">Região</span>
+        <div className="segmented" role="group" aria-label="Região">
+          <button aria-pressed={region === "brazil"} className={(region === "brazil" ? "selected " : "") + "region-option brazil"} onClick={() => chooseRegion("brazil", "Brazil")}>Brasil</button>
+          <button aria-pressed={region === "schengen"} className={(region === "schengen" ? "selected " : "") + "region-option schengen"} onClick={() => chooseRegion("schengen", "Italy")}>Schengen</button>
+        </div>
+      </div>
+      {start && <button className="button secondary planner-clear" onClick={clearSelection}>Limpar</button>}
+    </div>
+    <div className="calculation-strip">
+      <div>
+        <span className="planner-label">{region === "brazil" ? "Brasil" : "Schengen"}</span>
+        <strong>{activeRule.windowDays} dias de janela</strong>
+        <small>{formatDate(windowStart, { day: "2-digit", month: "short", year: "numeric" })} — {formatDate(windowEnd, { day: "2-digit", month: "short", year: "numeric" })}</small>
+      </div>
+      <div className={"calculation-score " + status.status}>
+        <strong>{status.used}<small> / {activeRule.limit}</small></strong>
+        <span>{status.remaining > 0 ? status.remaining + " dias" : "limite"}</span>
+      </div>
+    </div>
+    <SelectionSummary status={status} days={selectedDays} start={start} />
+    <div className="month-jump-row">
+      <label htmlFor="month-jump">Navegar</label>
+      <input type="month" id="month-jump" value={jumpMonth.slice(0, 7)} onChange={(e) => jumpToMonth(e.target.value + "-01")} />
+    </div>
+    <section className="annual-calendar" aria-label="Calendário de viagens">
+      {rollingMonths.map((month) => {
+        const date = new Date(month + "T12:00:00Z");
+        return <MonthCalendar key={month} year={date.getUTCFullYear()} month={date.getUTCMonth()} rangeStart={addDays(isoToday(), -180)} rangeEnd={addDays(isoToday(), 548)} today={today} trips={trips} selectedRegion={region} selectedStart={selectedStart} selectedEnd={selectedEnd} isSelected={isSelected} isInWindow={isInWindow} tripForDay={tripForDay} onDay={(date, trip) => { if (trip) onOpen(trip); else chooseDay(date); }} />;
+      })}
+    </section>
+    <div className="planner-footer">
+      <div>
+        <span className="planner-label">Período</span>
+        <strong>{selectedStart && selectedEnd ? formatDate(selectedStart, { day: "2-digit", month: "short" }) + " — " + formatDate(selectedEnd, { day: "2-digit", month: "short" }) : "—"}</strong>
+      </div>
+      <button className="button primary" onClick={saveSelection} disabled={!selectedStart || !selectedEnd}>Salvar</button>
+    </div>
+    {trips.length > 0 && <section className="list-section planner-existing">
+      <div className="section-heading small">
+        <h2>Viagens</h2>
+        <span className="count-label">{trips.length}</span>
+      </div>
+      <div className="trip-list">
+        {trips.slice(0, 6).map((trip) => <button className="trip-row" key={trip.id} onClick={() => onOpen(trip)}>
+          <span className={"region-marker " + trip.region} />
+          <span className="trip-dates">
+            <strong>{formatDate(trip.start)} — {formatDate(trip.end)}</strong>
+            <small>{trip.country} · {inclusiveDays(trip.start, trip.end)} dias</small>
+          </span>
+          <span className="row-chevron">→</span>
+        </button>)}
+      </div>
+    </section>}
   </div>;
 }
 
