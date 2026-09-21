@@ -76,19 +76,20 @@ export function CalendarPlanner({ trips, rules, onOpen, onSave }: CalendarPlanne
       </div>
       {start && <button className="button secondary planner-clear" onClick={clearSelection}>Limpar</button>}
     </div>
-    <div className="calculation-strip">
-      <div>
-        <span className="planner-label">{region === "brazil" ? "Brasil" : "Schengen"}</span>
-        <strong>{activeRule.windowDays} dias de janela</strong>
-        <small>{formatDate(windowStart, { day: "2-digit", month: "short", year: "numeric" })} — {formatDate(windowEnd, { day: "2-digit", month: "short", year: "numeric" })}</small>
+    <div className="region-status-cards">
+      <div className="status-card">
+        <div className="status-header">Brasil</div>
+        <div className="status-numbers"><strong>{status.used}<small> / {activeRule.limit}</small></strong></div>
+        <div className="status-label">{status.remaining > 0 ? status.remaining + " disponíveis" : "limite atingido"}</div>
       </div>
-      <div className={"calculation-score " + status.status}>
-        <strong>{status.used}<small> / {activeRule.limit}</small></strong>
-        <span>{status.remaining > 0 ? status.remaining + " dias" : "limite"}</span>
+      <div className="status-card">
+        <div className="status-header">Schengen</div>
+        <div className="status-numbers"><strong>{statusForDate(rules.find((r) => r.region === "schengen") || rules[1], trips, today).used}<small> / {rules.find((r) => r.region === "schengen")?.limit || 90}</small></strong></div>
+        <div className="status-label">{statusForDate(rules.find((r) => r.region === "schengen") || rules[1], trips, today).remaining + " disponíveis"}</div>
       </div>
     </div>
-    <SelectionSummary status={status} days={selectedDays} start={start} />
-    <ForecastCard forecast={forecast} region={region} />
+    {start && <ForecastCard forecast={forecast} region={region} />}
+    {selectedStart && selectedEnd && <SelectionSummary status={status} days={selectedDays} start={start} />}
     <div className="month-jump-row">
       <label htmlFor="month-jump">Navegar</label>
       <input type="month" id="month-jump" value={jumpMonth.slice(0, 7)} onChange={(e) => jumpToMonth(e.target.value + "-01")} />
