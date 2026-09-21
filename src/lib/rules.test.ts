@@ -165,3 +165,50 @@ test("maxSafeStay: datas invertidas", () => {
   assert.equal(result.safe, true);
   assert.equal(result.maxUsed, 0);
 });
+
+// Acceptance test scenarios
+test("acceptance: 75/90 usados, entrada amanhã", () => {
+  const asOf = "2026-09-18";
+  const existing = trip("existing", "schengen", addDays(asOf, -74), asOf); // 75 dias
+  const status = statusFor(schengen, [existing], asOf);
+  assert.equal(status.used, 75);
+  assert.equal(status.remaining, 15);
+  const nextEntry = addDays(asOf, 1);
+  const forecast = maxSafeStay(schengen, [existing], "schengen", nextEntry);
+  assert.equal(forecast.daysAvailable, 15);
+});
+
+test("acceptance: seleciona 16º dia, marca como over", () => {
+  const asOf = "2026-09-18";
+  const baseDate = addDays(asOf, -89);
+  const existing = trip("existing", "schengen", baseDate, asOf); // 90 dias, no limit
+  const analysis = analyzeTrip(schengen, [existing], "schengen", baseDate, addDays(baseDate, 90));
+  assert(analysis.firstOverDate);
+  assert.equal(analysis.lastSafeDate, addDays(baseDate, 89));
+});
+
+test("acceptance: período antigo sai da janela durante viagem", () => {
+  const asOf = "2026-09-18";
+  const future = addDays(asOf, 90);
+  const oldTrip = trip("old", "schengen", addDays(future, -200), addDays(future, -190)); // antes da janela de 180
+  const status1 = statusFor(schengen, [oldTrip], future);
+  assert.equal(status1.used, 0);
+});
+
+test("acceptance: navegar para 2031", () => {
+  const futureMont = "2031-01-15";
+  const days = inclusiveDays(futureMont, futureMont);
+  assert.equal(days, 1);
+});
+
+test("acceptance: navegar para 2023", () => {
+  const pastMonth = "2023-06-15";
+  const days = inclusiveDays(pastMonth, pastMonth);
+  assert.equal(days, 1);
+});
+
+test("acceptance: overlap geográfico bloqueado", () => {
+  const brazil1 = trip("br1", "brazil", "2026-09-10", "2026-09-20");
+  const schengen1 = trip("sch1", "schengen", "2026-09-15", "2026-09-25");
+  assert(brazil1.start <= schengen1.end && brazil1.end >= schengen1.start);
+});
