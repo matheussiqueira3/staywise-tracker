@@ -1,7 +1,69 @@
-# Staywise Tracker
+# Staywise — Product Definition
 
-Staywise is a private, mobile-first travel-day cockpit for one person who needs to understand where their days are being used across Brazil and Schengen.
+## Core Question
 
-The product mode is Operate: answer “where can I stay, and for how long?” quickly, with a calendar as evidence and a simulator for decisions before they become real.
+> “Given where I've been and where I want to go, how long can I stay in each region, and when do conflicts occur?”
 
-The app must never present a travel-day calculation as legal, tax, or immigration advice. Rules are configurable, and the source workbook is historical input rather than authoritative law.
+## Primary Flow
+
+1. Choose region (Brazil / Schengen)
+2. Choose entry date
+3. Staywise automatically calculates:
+   - Last safe day
+   - Available days
+   - First day over limit
+4. User selects exit date
+5. Save trip
+
+## Design Principles
+
+- **Mobile first.** No desktop-only UX.
+- **No explicit planning mode.** Selection is immediate.
+- **Calendar browsing is unbounded.** Navigate freely to any month; mathematical window remains bounded (180/360 days).
+- **Business logic is separate.** `src/lib` contains all calculations; UI never re-derives stay status.
+- **Exactly at limit is allowed.** Only `> limit` is over; `== limit` is OK.
+- **Evaluate every day.** Not just entry + exit.
+
+## What This App Does
+
+- Track trips by date range and region.
+- Show rolling availability (days remaining in window).
+- Flag conflicts before saving.
+- Persist to personal workspace (no shared state).
+
+## What This App Does NOT Do
+
+- Provide legal or tax advice.
+- Integrate with airlines, immigration, or tax systems.
+- Suggest travel.
+- Use AI.
+- Support multiple users.
+- Render a fixed calendar horizon.
+
+## Data Model
+
+```ts
+type Trip = {
+  id: string;
+  region: “BR” | “SCHENGEN”;
+  start: string;   // ISO date
+  end: string;     // ISO date
+  notes?: string;
+};
+
+type Rule = {
+  region: “BR” | “SCHENGEN”;
+  windowDays: number;      // 180 or 90
+  rollingWindow: number;   // 365 or 365
+};
+
+type Status = {
+  used: number;
+  available: number;
+  warningDays: number;
+};
+```
+
+## Success
+
+The app answers “can I stay?” and “until when?” in one interaction after entry selection.
