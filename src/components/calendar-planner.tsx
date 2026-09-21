@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { addDays, formatDate, inclusiveDays, isoToday, statusForDate } from "@/lib/rules";
+import { addDays, formatDate, inclusiveDays, isoToday, maxSafeStay, statusForDate } from "@/lib/rules";
+import type { MaxSafeStay } from "@/lib/rules";
 import type { Rule, RuleStatus, Region, Trip } from "@/lib/types";
 
 type CalendarPlannerProps = { trips: Trip[]; rules: Rule[]; onOpen: (trip: Trip) => void; onSave: (trip: Trip) => void };
@@ -12,6 +13,18 @@ function monthTitle(year: number, month: number) { return new Intl.DateTimeForma
 function monthKey(value: string) { return value.slice(0, 7) + "-01"; }
 function nextMonth(value: string) { const date = new Date(value + "T12:00:00Z"); date.setUTCMonth(date.getUTCMonth() + 1); return date.toISOString().slice(0, 10); }
 function monthsInRange(start: string, end: string) { const months: string[] = []; for (let month = monthKey(start); month <= monthKey(end); month = nextMonth(month)) months.push(month); return months; }
+
+function ForecastCard({ forecast, region }: { forecast: MaxSafeStay | null; region: Region }) {
+  if (!forecast) return null;
+  if (!forecast.lastSafeDate) return <div className="forecast-card danger"><strong>Sem disponibilidade</strong><small>Todos os dias disponíveis já foram usados na janela móvel.</small></div>;
+  const days = forecast.daysAvailable;
+  return <div className="forecast-card safe">
+    <div className="forecast-line"><strong>{region === "brazil" ? "Brasil" : "Schengen"}</strong></div>
+    <div className="forecast-line"><strong>Você pode ficar até</strong><strong className="forecast-date">{formatDate(forecast.lastSafeDate, { day: "2-digit", month: "short", year: "numeric" })}</strong></div>
+    <div className="forecast-line"><strong>{days} {days === 1 ? "dia" : "dias"} disponíveis</strong></div>
+    <div className="forecast-line small"><span>Entrada</span><span>{formatDate(forecast.start, { day: "2-digit", month: "short" })}</span></div>
+  </div>;
+}
 
 function SelectionSummary({ status, days, start }: { status: RuleStatus; days: number; start: string | null }) {
   if (!start) return null;
@@ -39,6 +52,7 @@ export function CalendarPlanner({ trips, rules, onOpen, onSave }: CalendarPlanne
   const tripForDay = (date: string) => trips.find((trip) => trip.start <= date && trip.end >= date);
   const isSelected = (date: string) => Boolean(selectedStart && selectedEnd && date >= selectedStart && date <= selectedEnd);
   const isInWindow = (date: string) => date >= windowStart && date <= windowEnd;
+  const forecast = start && !end ? maxSafeStay(activeRule, trips, region, start) : null;
 
   function chooseDay(date: string) {
     if (!start) { setStart(date); setEnd(null); return; }
@@ -74,6 +88,7 @@ export function CalendarPlanner({ trips, rules, onOpen, onSave }: CalendarPlanne
       </div>
     </div>
     <SelectionSummary status={status} days={selectedDays} start={start} />
+    <ForecastCard forecast={forecast} region={region} />
     <div className="month-jump-row">
       <label htmlFor="month-jump">Navegar</label>
       <input type="month" id="month-jump" value={jumpMonth.slice(0, 7)} onChange={(e) => jumpToMonth(e.target.value + "-01")} />
