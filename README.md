@@ -1,6 +1,6 @@
 # Staywise Tracker
 
-Controle mobile-first de permanência e simulação de dias no Brasil e em Schengen.
+Calculadora mobile-first de permanência. Escolha um país ou regime, informe a entrada e o Staywise mostra quantos dias ainda cabem, o último dia seguro e o primeiro dia acima do limite.
 
 ## Desenvolvimento
 
@@ -23,7 +23,7 @@ O estado fica no Upstash Redis (\`UPSTASH_REDIS_REST_URL\`, \`UPSTASH_REDIS_REST
 
 ## Dados
 
-O histórico inicial foi migrado da planilha original para \`src/data/imported-trips.json\`. Ele é usado apenas no servidor, para preencher um armazenamento vazio, e não é incluído no JavaScript enviado ao navegador.
+O histórico inicial foi migrado da planilha original para \`src/data/imported-trips.json\`. Ele é usado apenas no servidor, para preencher um armazenamento vazio, e não é incluído no JavaScript enviado ao navegador. Regras adicionais (outros países) podem ser cadastradas em Mais antes de criar um cenário.
 
 O MVP mantém o workspace no navegador e permite compartilhar um link com os dados no fragmento da URL. O fragmento não é enviado ao servidor, mas qualquer pessoa que possua o link poderá ler e alterar os dados.
 

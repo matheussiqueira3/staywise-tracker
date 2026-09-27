@@ -25,6 +25,31 @@ export function parseStored(value: unknown): StoredState | null {
   return legacy ? { revision: 0, state: legacy } : null;
 }
 
+export type StoredRead = { kind: "empty" } | { kind: "invalid" } | { kind: "ok"; stored: StoredState };
+
+/** Classifies the raw stored value, so a value that exists but fails to parse is never mistaken for an empty store. */
+export function readStored(raw: unknown): StoredRead {
+  if (raw === null || raw === undefined) return { kind: "empty" };
+  const stored = parseStored(raw);
+  return stored ? { kind: "ok", stored } : { kind: "invalid" };
+}
+
+/** Largest accepted write body, in bytes. */
+export const MAX_WRITE_BYTES = 512_000;
+
+export type WriteBody = { ok: true; write: WriteRequest } | { ok: false; status: 400 | 413 };
+
+/** Validates a raw write body: size (declared content-length and actual UTF-8 bytes), JSON, then the request shape. */
+export function parseWriteBody(contentLength: string | null, text: string): WriteBody {
+  const declared = Number(contentLength);
+  if (contentLength !== null && Number.isFinite(declared) && declared > MAX_WRITE_BYTES) return { ok: false, status: 413 };
+  if (text.length > MAX_WRITE_BYTES || new TextEncoder().encode(text).length > MAX_WRITE_BYTES) return { ok: false, status: 413 };
+  let body: unknown;
+  try { body = JSON.parse(text); } catch { return { ok: false, status: 400 }; }
+  const write = parseWriteRequest(body);
+  return write ? { ok: true, write } : { ok: false, status: 400 };
+}
+
 export function parseWriteRequest(value: unknown): WriteRequest | null {
   if (!value || typeof value !== "object") return null;
   const item = value as { state?: unknown; baseRevision?: unknown };

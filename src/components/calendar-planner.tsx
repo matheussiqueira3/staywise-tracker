@@ -1,16 +1,18 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { addDays, earliestEntryFor, findConflicts, formatDate, inclusiveDays, maxSafeStay, ruleForRegion, simulateTrip, statusFor } from "@/lib/rules";
+import { addDays, earliestEntryFor, findConflicts, formatDate, inclusiveDays, maxSafeStay, ruleForTrip, simulateTrip, statusFor } from "@/lib/rules";
 import type { AffectedTrip, MaxSafeStay, TripSimulation, TripStatus } from "@/lib/rules";
 import type { Region, Rule, Trip } from "@/lib/types";
 
-type CalendarPlannerProps = { trips: Trip[]; rules: Rule[]; today: string; initialRegion: Region; tripStatus: Map<string, TripStatus>; onOpen: (trip: Trip) => void; onSave: (trip: Trip) => boolean };
+type CalendarPlannerProps = { trips: Trip[]; rules: Rule[]; today: string; initialRuleId: string; tripStatus: Map<string, TripStatus>; onOpen: (trip: Trip) => void; onSave: (trip: Trip) => boolean };
 /** `tripOver`: the day belongs to a saved trip that is over the limit on/after its first over day. */
 type DayState = { trip?: Trip; tripOver?: boolean; forecast?: "safe" | "warning" | "last" | "over" | "blocked" };
 type DayChoice = { date: string; trip: Trip };
 const WEEKDAYS = ["seg", "ter", "qua", "qui", "sex", "sáb", "dom"];
-const REGIONS: Array<[Region, string, string]> = [["brazil", "Brasil", "Brazil"], ["schengen", "Schengen", "Italy"], ["other", "Outro", "Other"]];
+/** Picker value for a rule-less trip: recorded only to block overlapping dates, never counted toward a limit. */
+export const NO_RULE = "none";
+export const NO_RULE_LABEL = "Outro (sem regra)";
 const MONTH_STEP = 12;
 const OVER_PREVIEW_DAYS = 14;
 
@@ -22,7 +24,13 @@ function monthsBetween(start: string, end: string) { const months: string[] = []
 function shortDate(value: string) { return formatDate(value, { day: "2-digit", month: "short" }); }
 function longDate(value: string) { return formatDate(value, { day: "2-digit", month: "short", year: "numeric" }); }
 function plural(count: number, one: string, many: string) { return count + " " + (count === 1 ? one : many); }
-function regionLabel(region: Region, country: string) { return region === "brazil" ? "Brasil" : region === "schengen" ? "Schengen" : country || "Outro"; }
+/** Default country typed for a rule: built-in regions keep their usual country, custom rules use their own name. */
+export function defaultCountry(rule?: Rule) { return !rule ? "" : rule.region === "brazil" ? "Brazil" : rule.region === "schengen" ? "Italy" : rule.label; }
+/** Rule picked by a picker value; an unknown id (e.g. a rule gone after a reload) falls back to the first rule. */
+export function ruleForChoice(rules: Rule[], choice: string): Rule | undefined { return choice === NO_RULE ? undefined : rules.find((rule) => rule.id === choice) || rules[0]; }
+/** Trip fields that say which rule it counts toward; a rule-less trip is region "other" without a ruleId. */
+export function ruleFields(rule?: Rule): Pick<Trip, "ruleId" | "region"> { return rule ? { ruleId: rule.id, region: rule.region } : { region: "other" }; }
+function placeLabel(rule: Rule | undefined, country: string) { return rule && rule.region !== "other" ? rule.label : country.trim() || rule?.label || "Outro"; }
 
 /** Badge with a saved trip's own verdict; nothing when it is within the limit or has no rule. */
 export function TripStatusBadge({ status }: { status?: TripStatus }) {
@@ -58,8 +66,8 @@ function ForecastCard({ forecast, rule }: { forecast: MaxSafeStay; rule: Rule })
 }
 
 function SelectionSummary({ days, end, simulation, forecast, conflict, rule, onAdjust }: { days: number; end: string; simulation: TripSimulation | null; forecast: MaxSafeStay | null; conflict?: Trip; rule?: Rule; onAdjust: (date: string) => void }) {
-  if (conflict) return <div className="forecast-card danger" role="alert"><strong>Conflito de datas</strong><small>Você já tem um período em {conflict.country} entre {shortDate(conflict.start)} e {longDate(conflict.end)}. Uma pessoa não pode estar em duas regiões no mesmo dia.</small></div>;
-  if (!rule || !simulation) return <div className="forecast-card neutral" role="status"><strong>{plural(days, "dia", "dias")}</strong><small>Sem regra de limite para esta região. O período é registrado, mas não conta para Brasil nem Schengen.</small></div>;
+  if (conflict) return <div className="forecast-card danger" role="alert"><strong>Conflito de datas</strong><small>Você já tem um período em {conflict.country} entre {shortDate(conflict.start)} e {longDate(conflict.end)}. Uma pessoa não pode estar em dois lugares no mesmo dia.</small></div>;
+  if (!rule || !simulation) return <div className="forecast-card neutral" role="status"><strong>{plural(days, "dia", "dias")}</strong><small>Sem regra de limite para este país. O período é registrado para evitar sobreposição, mas não conta para nenhum limite.</small></div>;
   const lastSafe = forecast?.lastSafeDate;
   const worsened = simulation.worsenedTrips.length > 0 ? <WorsenedLines items={simulation.worsenedTrips} /> : null;
   const adjust = lastSafe && simulation.firstOverDate ? <button className="button secondary forecast-action" onClick={() => onAdjust(lastSafe)}>Ajustar saída para {shortDate(lastSafe)}</button> : null;
@@ -132,9 +140,9 @@ function DayChoiceSheet({ choice, onEdit, onStart, onClose }: { choice: DayChoic
   </div>;
 }
 
-export function CalendarPlanner({ trips, rules, today, initialRegion, tripStatus, onOpen, onSave }: CalendarPlannerProps) {
-  const [region, setRegion] = useState<Region>(initialRegion);
-  const [country, setCountry] = useState(REGIONS.find(([value]) => value === initialRegion)?.[2] || "Brazil");
+export function CalendarPlanner({ trips, rules, today, initialRuleId, tripStatus, onOpen, onSave }: CalendarPlannerProps) {
+  const [ruleChoice, setRuleChoice] = useState(initialRuleId);
+  const [country, setCountry] = useState(() => defaultCountry(ruleForChoice(rules, initialRuleId)));
   const [start, setStart] = useState<string | null>(null);
   const [end, setEnd] = useState<string | null>(null);
   const [firstMonth, setFirstMonth] = useState(monthKey(today));
@@ -145,17 +153,22 @@ export function CalendarPlanner({ trips, rules, today, initialRegion, tripStatus
   // counts for the saved trips and rules it was given against, so a change there (e.g. after "Editar viagem") re-asks.
   const [confirmed, setConfirmed] = useState<{ key: string; trips: Trip[]; rules: Rule[] } | null>(null);
   const setConfirmedFor = (key: string | null) => setConfirmed(key ? { key, trips, rules } : null);
-  const rule = ruleForRegion(rules, region);
+  const rule = ruleForChoice(rules, ruleChoice);
+  const selectedRuleId = rule?.id ?? NO_RULE;
+  const { ruleId, region } = ruleFields(rule);
   const selectedStart = start && end && start > end ? end : start;
   const selectedEnd = start && end && start > end ? start : end;
-  const candidate = selectedStart && selectedEnd ? { region, start: selectedStart, end: selectedEnd } : null;
-  const forecast = useMemo(() => rule && selectedStart ? maxSafeStay(rule, trips, region, selectedStart) : null, [rule, trips, region, selectedStart]);
-  const simulation = useMemo(() => rule && candidate ? simulateTrip(rule, trips, candidate) : null, [rule, trips, candidate?.region, candidate?.start, candidate?.end]); // eslint-disable-line react-hooks/exhaustive-deps
-  const conflict = candidate ? findConflicts(trips, candidate).otherRegion[0] : undefined;
+  const candidate = selectedStart && selectedEnd ? { ruleId, region, start: selectedStart, end: selectedEnd } : null;
+  const forecast = useMemo(() => rule && selectedStart ? maxSafeStay(rule, trips, rule.region, selectedStart) : null, [rule, trips, selectedStart]);
+  const simulation = useMemo(() => rule && candidate ? simulateTrip(rule, trips, candidate) : null, [rule, trips, candidate?.ruleId, candidate?.region, candidate?.start, candidate?.end]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Saved trips of another rule overlapping the selection (or the entry day alone, while the exit is still open).
+  const overlapping = useMemo(() => selectedStart ? findConflicts(trips, { ruleId, region, start: selectedStart, end: selectedEnd ?? selectedStart }).otherRegion : [], [trips, ruleId, region, selectedStart, selectedEnd]);
+  const conflictIds = useMemo(() => new Set(overlapping.map((trip) => trip.id)), [overlapping]);
+  const conflict = candidate ? overlapping[0] : undefined;
   const statuses = useMemo(() => rules.map((item) => statusFor(item, trips, today)), [rules, trips, today]);
   const months = monthsBetween(firstMonth, lastMonth);
   const selectedDays = candidate ? inclusiveDays(candidate.start, candidate.end) : 0;
-  const candidateKey = candidate ? region + "|" + candidate.start + "|" + candidate.end : null;
+  const candidateKey = candidate ? selectedRuleId + "|" + candidate.start + "|" + candidate.end : null;
   // Unsafe plans that are not over yet need a second click; past trips are records and save at once.
   const needsConfirm = Boolean(candidate && simulation && !simulation.safe && candidate.end >= today);
   const confirming = needsConfirm && confirmed !== null && confirmed.key === candidateKey && confirmed.trips === trips && confirmed.rules === rules;
@@ -211,17 +224,18 @@ export function CalendarPlanner({ trips, rules, today, initialRegion, tripStatus
   function editChosenTrip() { if (!choice) return; setChoice(null); setConfirmed(null); onOpen(choice.trip); }
   function startAtChosenDay() {
     if (!choice) return;
-    // Plan in the tapped trip's region, so extending or replanning it does not start as a cross-region conflict.
+    // Plan under the tapped trip's rule (or none), so extending or replanning it does not start as a conflict.
     const { trip } = choice;
+    const tripRule = ruleForTrip(rules, trip);
     setChoice(null);
     setConfirmed(null);
-    setRegion(trip.region);
-    setCountry(trip.country || REGIONS.find(([value]) => value === trip.region)?.[2] || "Other");
+    setRuleChoice(tripRule?.id ?? NO_RULE);
+    setCountry(trip.country || defaultCountry(tripRule));
     setStart(choice.date);
     setEnd(null);
   }
   function clearSelection() { setStart(null); setEnd(null); setConfirmedFor(null); }
-  function chooseRegion(value: Region, defaultCountry: string) { setRegion(value); setCountry(defaultCountry); clearSelection(); }
+  function chooseRule(value?: Rule) { setRuleChoice(value?.id ?? NO_RULE); setCountry(defaultCountry(value)); clearSelection(); }
   function showMonth(value: string) {
     const target = monthKey(value);
     if (target < firstMonth) setFirstMonth(target);
@@ -233,28 +247,29 @@ export function CalendarPlanner({ trips, rules, today, initialRegion, tripStatus
   function saveSelection() {
     if (!candidate) return;
     if (needsConfirm && !confirming) { setConfirmedFor(candidateKey); return; }
-    if (onSave({ id: "trip-" + Date.now(), region, country: country.trim() || regionLabel(region, country), start: candidate.start, end: candidate.end })) clearSelection();
+    if (onSave({ id: "trip-" + Date.now(), ...ruleFields(rule), country: country.trim() || placeLabel(rule, country), start: candidate.start, end: candidate.end })) clearSelection();
   }
 
   return <div className="planner-shell">
     <div className="planner-toolbar">
       <div className="planner-region">
-        <span className="planner-label">Região</span>
-        <div className="segmented three" role="group" aria-label="Região">
-          {REGIONS.map(([value, label, defaultCountry]) => <button key={value} aria-pressed={region === value} className={(region === value ? "selected " : "") + "region-option " + value} onClick={() => chooseRegion(value, defaultCountry)}>{label}</button>)}
+        <span className="planner-label">País ou regime</span>
+        <div className="segmented rule-picker" role="group" aria-label="País ou regime">
+          {rules.map((item) => <button key={item.id} aria-pressed={selectedRuleId === item.id} className={(selectedRuleId === item.id ? "selected " : "") + "region-option " + item.region} onClick={() => chooseRule(item)}>{item.label}</button>)}
+          <button aria-pressed={!rule} className={(!rule ? "selected " : "") + "region-option other"} onClick={() => chooseRule(undefined)}>{NO_RULE_LABEL}</button>
         </div>
       </div>
-      {region === "other" && <div className="country-input"><label htmlFor="country-name">País/Cidade</label><input id="country-name" placeholder="Ex: Tailândia" value={country} onChange={(event) => setCountry(event.target.value)} /></div>}
+      {region === "other" && <div className="country-input"><label htmlFor="country-name">País</label><input id="country-name" placeholder="Ex: Tailândia" value={country} onChange={(event) => setCountry(event.target.value)} /></div>}
       {start && <button className="button secondary planner-clear" onClick={clearSelection}>Limpar</button>}
     </div>
     <div className="region-status-cards">
-      {statuses.map((status) => <div key={status.rule.id} className={"status-card " + status.status + (status.rule.region === region ? " active" : "")}>
+      {statuses.map((status) => <div key={status.rule.id} className={"status-card " + status.status + (status.rule.id === selectedRuleId ? " active" : "")}>
         <div className="status-header">{status.rule.label} · hoje</div>
         <div className="status-numbers"><strong>{status.used}<small> / {status.rule.limit}</small></strong></div>
         <div className="status-label">{status.status === "over" ? "acima do limite" : status.remaining > 0 ? plural(status.remaining, "dia disponível", "dias disponíveis") : "limite atingido"}</div>
       </div>)}
     </div>
-    {rule ? <EarliestEntry key={rule.id} rule={rule} trips={trips} today={today} onApply={applySelection} /> : !start && <div className="forecast-card neutral"><strong>Sem regra de limite</strong><small>Períodos em outros países são registrados para evitar sobreposição, mas não contam para Brasil nem Schengen.</small></div>}
+    {rule ? <EarliestEntry key={rule.id} rule={rule} trips={trips} today={today} onApply={applySelection} /> : !start && <div className="forecast-card neutral"><strong>Sem regra de limite</strong><small>Períodos sem regra são registrados para evitar sobreposição, mas não contam para nenhum limite.</small></div>}
     {!start && rule && <p className="planner-hint">Toque no dia de entrada para ver até quando pode ficar.</p>}
     {start && !end && forecast && rule && <ForecastCard forecast={forecast} rule={rule} />}
     {start && !end && !rule && <div className="forecast-card neutral" role="status"><strong>Entrada em {shortDate(start)}</strong><small>Toque no dia de saída.</small></div>}
@@ -266,7 +281,7 @@ export function CalendarPlanner({ trips, rules, today, initialRegion, tripStatus
     </div>
     <button className="button secondary month-more" onClick={() => { const target = shiftMonth(firstMonth, -MONTH_STEP); setFirstMonth(target); setScrollTarget(firstMonth); }}>Ver meses anteriores</button>
     <section className="annual-calendar" aria-label="Calendário de viagens">
-      {months.map((month) => <MonthCalendar key={month} month={month} today={today} dayStates={dayStates} selectedRegion={region} selectedLabel={regionLabel(region, country)} selectedStart={selectedStart} selectedEnd={selectedEnd} onDay={onDay} />)}
+      {months.map((month) => <MonthCalendar key={month} month={month} today={today} dayStates={dayStates} selectedRegion={region} selectedLabel={placeLabel(rule, country)} tripLabel={(trip) => placeLabel(ruleForTrip(rules, trip), trip.country)} conflictIds={conflictIds} selectedStart={selectedStart} selectedEnd={selectedEnd} onDay={onDay} />)}
     </section>
     <button className="button secondary month-more" onClick={() => setLastMonth(shiftMonth(lastMonth, MONTH_STEP))}>Ver mais meses</button>
     <div className={"planner-footer" + (start ? " is-planning" : "")}>
@@ -298,7 +313,7 @@ export function CalendarPlanner({ trips, rules, today, initialRegion, tripStatus
   </div>;
 }
 
-function MonthCalendar({ month, today, dayStates, selectedRegion, selectedLabel, selectedStart, selectedEnd, onDay }: { month: string; today: string; dayStates: Map<string, DayState>; selectedRegion: Region; selectedLabel: string; selectedStart: string | null; selectedEnd: string | null; onDay: (date: string, trip?: Trip) => void }) {
+function MonthCalendar({ month, today, dayStates, selectedRegion, selectedLabel, tripLabel, conflictIds, selectedStart, selectedEnd, onDay }: { month: string; today: string; dayStates: Map<string, DayState>; selectedRegion: Region; selectedLabel: string; tripLabel: (trip: Trip) => string; conflictIds: Set<string>; selectedStart: string | null; selectedEnd: string | null; onDay: (date: string, trip?: Trip) => void }) {
   const year = Number(month.slice(0, 4));
   const monthIndex = Number(month.slice(5, 7)) - 1;
   const numberOfDays = new Date(Date.UTC(year, monthIndex + 1, 0)).getUTCDate();
@@ -312,8 +327,8 @@ function MonthCalendar({ month, today, dayStates, selectedRegion, selectedLabel,
     const trip = state?.trip;
     if (trip) hasTrips = true;
     const selected = Boolean(selectedStart && (selectedEnd ? date >= selectedStart && date <= selectedEnd : date === selectedStart));
-    const conflict = Boolean(selected && trip && trip.region !== selectedRegion);
-    const tripName = trip ? regionLabel(trip.region, trip.country) : "";
+    const conflict = Boolean(selected && trip && conflictIds.has(trip.id));
+    const tripName = trip ? tripLabel(trip) : "";
     const label = [
       formatDate(date, { day: "numeric", month: "long", year: "numeric" }),
       trip ? "período registrado em " + tripName : "",

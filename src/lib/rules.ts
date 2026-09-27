@@ -1,33 +1,43 @@
 import type { Region, Rule, RuleStatus, Trip } from "./types";
 
-export const DEFAULT_RULES: Rule[] = [
-  { id: "brazil", label: "Brasil", region: "brazil", limit: 180, windowDays: 360, warningAt: 150 },
-  { id: "schengen", label: "Schengen", region: "schengen", limit: 90, windowDays: 180, warningAt: 75 },
-];
+export { DEFAULT_RULES } from "@/data/catalog";
+
+/**
+ * Whether a trip counts toward a rule. Trips name their rule by `ruleId`; legacy trips without one belong to the
+ * built-in rule of their region. Trips in "other" without a ruleId belong to no rule (recorded only to block overlaps).
+ */
+export function tripMatchesRule(trip: Pick<Trip, "ruleId" | "region">, rule: Pick<Rule, "id" | "region">): boolean {
+  return trip.ruleId ? trip.ruleId === rule.id : rule.region !== "other" && trip.region === rule.region;
+}
+/** The rule a trip counts toward, or undefined when it has none. */
+export function ruleForTrip(rules: Rule[], trip: Pick<Trip, "ruleId" | "region">): Rule | undefined { return rules.find((rule) => tripMatchesRule(trip, rule)); }
 export function parseDate(value: string): Date { return new Date(value + "T12:00:00Z"); }
 export function toDateKey(date: Date): string { return date.toISOString().slice(0, 10); }
 export function addDays(value: string, amount: number): string { const date = parseDate(value); date.setUTCDate(date.getUTCDate() + amount); return toDateKey(date); }
 export function inclusiveDays(start: string, end: string): number { return Math.max(0, Math.round((parseDate(end).getTime() - parseDate(start).getTime()) / 86400000) + 1); }
 export function overlaps(trip: Trip, start: string, end: string): boolean { return trip.start <= end && trip.end >= start; }
-export function daysInWindow(trips: Trip[], region: Region, start: string, end: string): number {
+export function daysInWindow(trips: Trip[], rule: Pick<Rule, "id" | "region">, start: string, end: string): number {
   const occupied = new Set<string>();
   for (const trip of trips) {
-    if (trip.region !== region || trip.start > trip.end || !overlaps(trip, start, end)) continue;
+    if (!tripMatchesRule(trip, rule) || trip.start > trip.end || !overlaps(trip, start, end)) continue;
     const clippedStart = trip.start > start ? trip.start : start;
     const clippedEnd = trip.end < end ? trip.end : end;
     for (let date = clippedStart; date <= clippedEnd; date = addDays(date, 1)) occupied.add(date);
   }
   return occupied.size;
 }
+/** Upper bound for a rule's window and limit (10 years), so absurd settings cannot freeze the UI. */
+const MAX_RULE_DAYS = 3660;
 function sanitizeRule(rule: Rule): Rule {
-  const limit = Math.max(1, Math.floor(rule.limit) || 1);
-  return { ...rule, limit, windowDays: Math.max(1, Math.floor(rule.windowDays) || 1), warningAt: Math.min(limit, Math.max(0, Math.floor(rule.warningAt) || 0)) };
+  const limit = Math.min(MAX_RULE_DAYS, Math.max(1, Math.floor(rule.limit) || 1));
+  return { ...rule, limit, windowDays: Math.min(MAX_RULE_DAYS, Math.max(1, Math.floor(rule.windowDays) || 1)), warningAt: Math.min(limit, Math.max(0, Math.floor(rule.warningAt) || 0)) };
 }
-function levelFor(rule: Rule, used: number): RuleStatus["status"] { return used > rule.limit ? "over" : used >= rule.warningAt ? "warning" : "ok"; }
+/** Exactly at the limit is allowed. A warning needs at least one used day, so warningAt 0 never warns on an empty history. */
+function levelFor(rule: Rule, used: number): RuleStatus["status"] { return used > rule.limit ? "over" : used > 0 && used >= rule.warningAt ? "warning" : "ok"; }
 export function statusFor(rule: Rule, trips: Trip[], asOf: string): RuleStatus {
   const safeRule = sanitizeRule(rule);
   const windowStart = addDays(asOf, -(safeRule.windowDays - 1));
-  const used = daysInWindow(trips, safeRule.region, windowStart, asOf);
+  const used = daysInWindow(trips, safeRule, windowStart, asOf);
   const remaining = Math.max(0, safeRule.limit - used);
   return { rule: safeRule, asOf, used, remaining, windowStart, status: levelFor(safeRule, used) };
 }
@@ -85,19 +95,24 @@ export type MaxSafeStay = {
 /** Verdict for one saved trip, evaluated on every day of it against all saved trips. */
 export type TripStatus = { tripId: string; status: "ok" | "warning" | "over" | "none"; maxUsed: number; excessDays: number; firstOverDate?: string; firstWarningDate?: string };
 
-type Candidate = Pick<Trip, "region" | "start" | "end"> & { id?: string };
+type Candidate = Pick<Trip, "region" | "start" | "end"> & { id?: string; ruleId?: string };
 
-// Day-by-day occupancy for one region over [from, from + size). Rolling sums over it make every
+/** Whether a proposed stay counts toward the rule: by ruleId when given, else by region (custom rules have region "other"). */
+function candidateCounts(candidate: Pick<Candidate, "ruleId" | "region">, rule: Rule): boolean {
+  return candidate.ruleId ? candidate.ruleId === rule.id : candidate.region === rule.region;
+}
+
+// Day-by-day occupancy for one rule over [from, from + size). Rolling sums over it make every
 // calculation linear in the number of days instead of re-scanning all trips for each day.
 type Span = { trip: Trip; first: number; last: number };
 type Ledger = { from: string; size: number; occupied: Uint8Array; spans: Span[] };
 
-function createLedger(trips: Trip[], region: Region, from: string, to: string): Ledger {
+function createLedger(trips: Trip[], rule: Rule, from: string, to: string): Ledger {
   const size = inclusiveDays(from, to);
   const occupied = new Uint8Array(size);
   const spans: Span[] = [];
   for (const trip of trips) {
-    if (trip.region !== region || trip.start > trip.end || !overlaps(trip, from, to)) continue;
+    if (!tripMatchesRule(trip, rule) || trip.start > trip.end || !overlaps(trip, from, to)) continue;
     const first = trip.start > from ? inclusiveDays(from, trip.start) - 1 : 0;
     const last = trip.end < to ? inclusiveDays(from, trip.end) - 1 : size - 1;
     occupied.fill(1, first, last + 1);
@@ -120,12 +135,13 @@ function rollingUsed(occupied: Uint8Array, windowDays: number): Int32Array {
 type LaterImpact = { kind: "affected" | "worsened"; item: AffectedTrip };
 
 /**
- * Ledger range that also covers the whole extent (plus its window) of every same-region trip with a day in
+ * Ledger range that also covers the whole extent (plus its window) of every trip of the rule with a day in
  * (reachFrom, reachTo], so "already over" can be judged on the entire saved trip, not only on the days in reach.
  */
-function extendedRange(trips: Trip[], region: Region, windowDays: number, from: string, to: string, reachFrom: string, reachTo: string): { from: string; to: string } {
+function extendedRange(trips: Trip[], rule: Rule, from: string, to: string, reachFrom: string, reachTo: string): { from: string; to: string } {
+  const { windowDays } = rule;
   for (const trip of trips) {
-    if (trip.region !== region || trip.start > trip.end || trip.end <= reachFrom || trip.start > reachTo) continue;
+    if (!tripMatchesRule(trip, rule) || trip.start > trip.end || trip.end <= reachFrom || trip.start > reachTo) continue;
     const tripFrom = addDays(trip.start, -(windowDays - 1));
     if (tripFrom < from) from = tripFrom;
     if (trip.end > to) to = trip.end;
@@ -169,13 +185,14 @@ function simulate(rule: Rule, trips: Trip[], candidate: Candidate, withAffected:
   const others = candidate.id ? trips.filter((trip) => trip.id !== candidate.id) : trips;
   const reach = addDays(end, safeRule.windowDays - 1);
   const { from, to } = withAffected
-    ? extendedRange(others, safeRule.region, safeRule.windowDays, addDays(start, -(safeRule.windowDays - 1)), reach, end, reach)
+    ? extendedRange(others, safeRule, addDays(start, -(safeRule.windowDays - 1)), reach, end, reach)
     : { from: addDays(start, -(safeRule.windowDays - 1)), to: end };
-  const base = createLedger(others, safeRule.region, from, to);
+  const base = createLedger(others, safeRule, from, to);
+  const counts = candidateCounts(candidate, safeRule);
   const withCandidate = base.occupied.slice();
   const startIndex = inclusiveDays(from, start) - 1;
   const endIndex = inclusiveDays(from, end) - 1;
-  if (candidate.region === safeRule.region) withCandidate.fill(1, startIndex, endIndex + 1);
+  if (counts) withCandidate.fill(1, startIndex, endIndex + 1);
   const used = rollingUsed(withCandidate, safeRule.windowDays);
 
   let maxUsed = 0;
@@ -191,7 +208,7 @@ function simulate(rule: Rule, trips: Trip[], candidate: Candidate, withAffected:
 
   const affectedTrips: AffectedTrip[] = [];
   const worsenedTrips: AffectedTrip[] = [];
-  if (withAffected && candidate.region === safeRule.region) {
+  if (withAffected && counts) {
     const baseUsed = rollingUsed(base.occupied, safeRule.windowDays);
     const reachIndex = endIndex + safeRule.windowDays - 1;
     for (const span of base.spans) {
@@ -228,18 +245,22 @@ export function simulateTrip(rule: Rule, trips: Trip[], candidate: Candidate): T
   return simulate(rule, trips, candidate, true);
 }
 
-const MAX_STAY_SEARCH_DAYS = 366;
+const MIN_STAY_SEARCH_DAYS = 366;
 
 /**
  * Last exit date for a stay starting on `entryDate` that keeps this stay within the limit and neither pushes a
  * saved later trip over nor adds excess to one already over. Consistent with `simulateTrip(...).safe`.
+ * The stay counts toward the rule when `region === rule.region` (pass `rule.region` for a custom rule).
  */
 export function maxSafeStay(rule: Rule, trips: Trip[], region: Region, entryDate: string): MaxSafeStay {
   const safeRule = sanitizeRule(rule);
-  const searchEnd = addDays(entryDate, MAX_STAY_SEARCH_DAYS);
+  // When the window is longer than the limit, a continuous stay goes over by day limit + 1, so search that far.
+  // Otherwise the stay can never exceed the limit on its own and one year is enough.
+  const searchDays = safeRule.windowDays > safeRule.limit ? Math.max(MIN_STAY_SEARCH_DAYS, safeRule.limit) : MIN_STAY_SEARCH_DAYS;
+  const searchEnd = addDays(entryDate, searchDays);
   const reach = addDays(searchEnd, safeRule.windowDays - 1);
-  const { from, to } = extendedRange(trips, safeRule.region, safeRule.windowDays, addDays(entryDate, -(safeRule.windowDays - 1)), reach, entryDate, reach);
-  const ledger = createLedger(trips, safeRule.region, from, to);
+  const { from, to } = extendedRange(trips, safeRule, addDays(entryDate, -(safeRule.windowDays - 1)), reach, entryDate, reach);
+  const ledger = createLedger(trips, safeRule, from, to);
   const baseUsed = rollingUsed(ledger.occupied, safeRule.windowDays);
   const used = baseUsed.slice();
   const entryIndex = inclusiveDays(from, entryDate) - 1;
@@ -247,7 +268,7 @@ export function maxSafeStay(rule: Rule, trips: Trip[], region: Region, entryDate
   let lastSafeDate: string | null = null;
   let firstWarningDate: string | undefined;
 
-  for (let day = 0; day <= MAX_STAY_SEARCH_DAYS; day++) {
+  for (let day = 0; day <= searchDays; day++) {
     const index = entryIndex + day;
     const date = addDays(entryDate, day);
     // Adding this day only changes days [index, index + windowDays), exactly the saved days simulateTrip checks for an
@@ -268,7 +289,7 @@ export function maxSafeStay(rule: Rule, trips: Trip[], region: Region, entryDate
       if (impact) return result("later-trip", date, impact.item);
     }
     lastSafeDate = date;
-    if (!firstWarningDate && used[index] >= safeRule.warningAt) firstWarningDate = date;
+    if (!firstWarningDate && levelFor(safeRule, used[index]) === "warning") firstWarningDate = date;
   }
   return result();
 
@@ -279,15 +300,22 @@ export function maxSafeStay(rule: Rule, trips: Trip[], region: Region, entryDate
 
 export type TripConflicts = { otherRegion: Trip[]; sameRegion: Trip[] };
 
-/** Saved trips overlapping the candidate's dates. Being in two regions on the same day is a conflict. */
+/** Identity of the place a trip is in: its rule when it names one, else its region. */
+function placeKey(trip: Pick<Trip, "ruleId" | "region">): string { return trip.ruleId ?? trip.region; }
+
+/**
+ * Saved trips overlapping the candidate's dates. Being in two places on the same day is a conflict: `otherRegion`
+ * holds trips under a different rule (or region, for trips without a rule), `sameRegion` those under the same one.
+ */
 export function findConflicts(trips: Trip[], candidate: Candidate): TripConflicts {
+  const key = placeKey(candidate);
   const overlapping = trips.filter((trip) => trip.id !== candidate.id && overlaps(trip, candidate.start, candidate.end));
-  return { otherRegion: overlapping.filter((trip) => trip.region !== candidate.region), sameRegion: overlapping.filter((trip) => trip.region === candidate.region) };
+  return { otherRegion: overlapping.filter((trip) => placeKey(trip) !== key), sameRegion: overlapping.filter((trip) => placeKey(trip) === key) };
 }
 
 /**
  * First entry date on or after `from` where a genuinely new stay of `lengthDays` is safe and overlaps no saved trip of
- * any region (days already booked in the same region add no new days, but they are not a new stay), or null.
+ * any rule or region (days already booked under the same rule add no new days, but they are not a new stay), or null.
  */
 export function earliestEntryFor(rule: Rule, trips: Trip[], lengthDays: number, from: string, horizonDays = 730): { start: string; end: string } | null {
   const safeRule = sanitizeRule(rule);
@@ -295,7 +323,7 @@ export function earliestEntryFor(rule: Rule, trips: Trip[], lengthDays: number, 
   if (!(length >= 1) || length > safeRule.limit) return null;
   for (let day = 0; day <= horizonDays; day++) {
     const start = addDays(from, day);
-    const candidate = { region: safeRule.region, start, end: addDays(start, length - 1) };
+    const candidate = { region: safeRule.region, ruleId: safeRule.id, start, end: addDays(start, length - 1) };
     if (trips.some((trip) => overlaps(trip, candidate.start, candidate.end))) continue;
     if (simulate(safeRule, trips, candidate, true).safe) return { start: candidate.start, end: candidate.end };
   }
@@ -312,15 +340,15 @@ export function upcomingTrips(trips: Trip[], today: string): Trip[] {
   return trips.filter((trip) => trip.start > today).sort((a, b) => a.start.localeCompare(b.start));
 }
 
-/** Status of every saved trip keyed by trip id, each day evaluated against all saved trips; "none" for regions without a rule. */
+/** Status of every saved trip keyed by trip id, each day evaluated against all saved trips; "none" for trips without a rule. */
 export function tripStatuses(rules: Rule[], trips: Trip[]): Map<string, TripStatus> {
   const statuses = new Map<string, TripStatus>();
   for (const trip of trips) {
-    const rule = ruleForRegion(rules, trip.region);
+    const rule = ruleForTrip(rules, trip);
     if (!rule || trip.start > trip.end) { statuses.set(trip.id, { tripId: trip.id, status: "none", maxUsed: 0, excessDays: 0 }); continue; }
     const safeRule = sanitizeRule(rule);
-    const { maxUsed, excessDays, firstOverDate, firstWarningDate } = simulate(safeRule, trips, { id: trip.id, region: trip.region, start: trip.start, end: trip.end }, false);
-    const status = firstOverDate ? "over" : maxUsed >= safeRule.warningAt ? "warning" : "ok";
+    const { maxUsed, excessDays, firstOverDate, firstWarningDate } = simulate(safeRule, trips, { id: trip.id, ruleId: rule.id, region: trip.region, start: trip.start, end: trip.end }, false);
+    const status = firstOverDate ? "over" : levelFor(safeRule, maxUsed) === "warning" ? "warning" : "ok";
     statuses.set(trip.id, { tripId: trip.id, status, maxUsed, excessDays, firstOverDate, firstWarningDate });
   }
   return statuses;

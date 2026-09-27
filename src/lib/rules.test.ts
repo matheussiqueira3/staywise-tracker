@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { DEFAULT_RULES, addDays, analyzeTrip, currentTrip, daysInWindow, earliestEntryFor, findConflicts, formatDate, formatFullDate, inclusiveDays, isoToday, maxSafeStay, parseDate, simulateTrip, statusFor, tripStatuses, upcomingTrips } from "./rules";
+import { DEFAULT_RULES, addDays, analyzeTrip, currentTrip, daysInWindow, earliestEntryFor, findConflicts, formatDate, formatFullDate, inclusiveDays, isoToday, maxSafeStay, parseDate, ruleForTrip, simulateTrip, statusFor, tripMatchesRule, tripStatuses, upcomingTrips } from "./rules";
+import { decodeState, encodeState, normalizeState } from "./share";
 import type { Rule } from "./types";
 import type { Trip } from "./types";
 
 const brazil = DEFAULT_RULES[0];
 const schengen = DEFAULT_RULES[1];
+const thailand: Rule = { id: "custom-th", label: "Tailândia", countryCode: "TH", region: "other", limit: 60, windowDays: 180, warningAt: 45 };
+const japan: Rule = { id: "custom-jp", label: "Japão", countryCode: "JP", region: "other", limit: 90, windowDays: 180, warningAt: 75 };
 
 function trip(id: string, region: Trip["region"], start: string, end: string): Trip {
   return { id, region, country: region === "brazil" ? "Brazil" : "Italy", start, end };
@@ -31,7 +34,7 @@ test("Schengen respeita 90 em 180 dias e não soma sobreposições", () => {
   const overlapping = trip("overlap", "schengen", addDays(asOf, -20), addDays(asOf, 10));
   const outside = trip("outside", "schengen", addDays(asOf, -180), addDays(asOf, -180));
 
-  assert.equal(daysInWindow([first, overlapping], "schengen", addDays(asOf, -179), asOf), 90);
+  assert.equal(daysInWindow([first, overlapping], schengen, addDays(asOf, -179), asOf), 90);
   assert.equal(statusFor(schengen, [first, outside], asOf).used, 90);
   assert.equal(statusFor(schengen, [first], asOf).status, "warning");
   assert.equal(statusFor(schengen, [trip("over", "schengen", addDays(asOf, -90), asOf)], asOf).status, "over");
@@ -111,7 +114,7 @@ test("analyzeTrip: overlapping não duplica dias", () => {
   const asOf = "2026-09-18";
   const trip1 = trip("trip1", "schengen", addDays(asOf, -40), addDays(asOf, -20)); // 21 dias
   const trip2 = trip("trip2", "schengen", addDays(asOf, -30), asOf); // 31 dias, overlap -30 a -20 = 11 dias
-  const window = daysInWindow([trip1, trip2], "schengen", addDays(asOf, -179), asOf);
+  const window = daysInWindow([trip1, trip2], schengen, addDays(asOf, -179), asOf);
   assert.equal(window, 41); // 21 + 31 - 11 = 41
 });
 
@@ -120,8 +123,8 @@ test("analyzeTrip: dias antigos saem corretamente da rolling window", () => {
   const windowStart = addDays(asOf, -179);
   const outside = trip("outside", "schengen", addDays(asOf, -180), addDays(asOf, -180));
   const inside = trip("inside", "schengen", addDays(asOf, -178), asOf);
-  assert.equal(daysInWindow([outside], "schengen", windowStart, asOf), 0);
-  assert.equal(daysInWindow([inside], "schengen", windowStart, asOf), 179);
+  assert.equal(daysInWindow([outside], schengen, windowStart, asOf), 0);
+  assert.equal(daysInWindow([inside], schengen, windowStart, asOf), 179);
 });
 
 test("maxSafeStay: encontra o último dia permitido", () => {
@@ -473,7 +476,7 @@ function referenceAnalyze(rule: Rule, trips: Trip[], region: Trip["region"], sta
   let maxUsed = 0; let maxUsedDate = start; let firstWarningDate: string | undefined; let firstOverDate: string | undefined;
   if (start > end) return { safe: true, maxUsed: 0, maxUsedDate: start, firstWarningDate, firstOverDate, lastSafeDate: undefined };
   for (let day = start; day <= end; day = addDays(day, 1)) {
-    const status = statusFor(rule, [...trips, { id: "ref", region, country: "", start, end: day }], day);
+    const status = statusFor(rule, [...trips, { id: "ref", ruleId: region === rule.region ? rule.id : undefined, region, country: "", start, end: day }], day);
     if (status.used > maxUsed) { maxUsed = status.used; maxUsedDate = day; }
     if (status.status === "warning" && !firstWarningDate) firstWarningDate = day;
     if (status.status === "over" && !firstOverDate) firstOverDate = day;
@@ -490,11 +493,11 @@ function referenceLaterImpacts(rule: Rule, trips: Trip[], start: string, end: st
   const dayNumber = (value: string) => Math.round(parseDate(value).getTime() / 86400000);
   const occupancy = (list: Trip[]) => {
     const days = new Set<number>();
-    for (const item of list) if (item.region === rule.region && item.start <= item.end) for (let day = dayNumber(item.start); day <= dayNumber(item.end); day++) days.add(day);
+    for (const item of list) if (tripMatchesRule(item, rule) && item.start <= item.end) for (let day = dayNumber(item.start); day <= dayNumber(item.end); day++) days.add(day);
     return days;
   };
   const without = occupancy(trips);
-  const withNew = occupancy([...trips, trip("new", rule.region, start, end)]);
+  const withNew = occupancy([...trips, { ...trip("new", rule.region, start, end), ruleId: rule.id }]);
   const usedOn = (days: Set<number>, day: number) => { let count = 0; for (let back = 0; back < rule.windowDays; back++) if (days.has(day - back)) count++; return count; };
   const exit = dayNumber(end);
   const reach = exit + rule.windowDays - 1;
@@ -502,7 +505,7 @@ function referenceLaterImpacts(rule: Rule, trips: Trip[], start: string, end: st
   const worsened = new Map<string, [string, number]>();
   let overOnlyOutOfReach = 0; // worsened trips that are within the limit on every day the candidate reaches
   for (const saved of trips) {
-    if (saved.region !== rule.region || saved.start > saved.end) continue;
+    if (!tripMatchesRule(saved, rule) || saved.start > saved.end) continue;
     const first = dayNumber(saved.start);
     const last = dayNumber(saved.end);
     if (last <= exit || first > reach) continue;
@@ -543,7 +546,8 @@ test("motor rápido: equivalente ao algoritmo original em 300 cenários aleatór
     const fast = analyzeTrip(rule, trips, rule.region, start, end);
     assert.deepEqual(fast, referenceAnalyze(rule, trips, rule.region, start, end), "analyzeTrip run " + run);
 
-    const simulation = simulateTrip(rule, trips, { region: rule.region, start, end });
+    const place = rule.region === "other" ? { region: rule.region, ruleId: rule.id } : { region: rule.region };
+    const simulation = simulateTrip(rule, trips, { ...place, start, end });
     const expected = referenceLaterImpacts(rule, trips, start, end);
     const toMap = (items: typeof simulation.affectedTrips) => new Map(items.map((item): [string, [string, number]] => [item.trip.id, [item.firstOverDate, item.excessDays]]));
     assert.deepEqual(toMap(simulation.affectedTrips), expected.affected, "affected trips run " + run);
@@ -554,12 +558,244 @@ test("motor rápido: equivalente ao algoritmo original em 300 cenários aleatór
     overOnlyOutOfReach += expected.overOnlyOutOfReach;
 
     const forecast = maxSafeStay(rule, trips, rule.region, start);
-    if (forecast.lastSafeDate) assert.equal(simulateTrip(rule, trips, { region: rule.region, start, end: forecast.lastSafeDate }).safe, true, "last safe date is safe, run " + run);
-    if (forecast.firstOverDate) assert.equal(simulateTrip(rule, trips, { region: rule.region, start, end: forecast.firstOverDate }).safe, false, "first over date is unsafe, run " + run);
+    if (forecast.lastSafeDate) assert.equal(simulateTrip(rule, trips, { ...place, start, end: forecast.lastSafeDate }).safe, true, "last safe date is safe, run " + run);
+    if (forecast.firstOverDate) assert.equal(simulateTrip(rule, trips, { ...place, start, end: forecast.firstOverDate }).safe, false, "first over date is unsafe, run " + run);
     if (forecast.blockingTrip) {
-      const blocked = simulateTrip(rule, trips, { region: rule.region, start, end: forecast.firstOverDate! });
+      const blocked = simulateTrip(rule, trips, { ...place, start, end: forecast.firstOverDate! });
       assert.deepEqual([...blocked.affectedTrips, ...blocked.worsenedTrips].find((item) => item.trip.id === forecast.blockingTrip!.trip.id), forecast.blockingTrip, "blocking trip matches simulateTrip, run " + run);
     }
   }
   assert(affectedRuns >= 10 && worsenedRuns >= 10 && overOnlyOutOfReach >= 1, `scenarios cover both lists (affected ${affectedRuns}, worsened ${worsenedRuns}, over only out of reach ${overOnlyOutOfReach})`);
+});
+
+test("motor rápido: regra customizada equivale ao algoritmo original em 150 cenários aleatórios", () => {
+  const random = seededRandom(1234);
+  const pick = (max: number) => Math.floor(random() * max);
+  let impactedRuns = 0;
+  for (let run = 0; run < 150; run++) {
+    const rule: Rule = { ...thailand, limit: 30 + pick(90), windowDays: 90 + pick(300), warningAt: 20 };
+    // Mix of trips under the rule, under another custom rule, rule-less "other" trips and built-in trips; only the first count.
+    const trips: Trip[] = Array.from({ length: pick(8) }, (_, index) => {
+      const start = addDays("2026-01-01", pick(700));
+      const saved = trip("t" + index, "other", start, addDays(start, random() < 0.4 ? pick(160) : pick(40)));
+      const kind = random();
+      return kind < 0.7 ? { ...saved, ruleId: rule.id } : kind < 0.8 ? { ...saved, ruleId: japan.id } : kind < 0.9 ? saved : { ...saved, region: "schengen" };
+    });
+    const start = addDays("2026-06-01", pick(400));
+    const end = addDays(start, pick(120));
+    assert.deepEqual(analyzeTrip(rule, trips, "other", start, end), referenceAnalyze(rule, trips, "other", start, end), "analyzeTrip run " + run);
+    const candidate = { region: "other" as const, ruleId: rule.id };
+    const simulation = simulateTrip(rule, trips, { ...candidate, start, end });
+    const expected = referenceLaterImpacts(rule, trips, start, end);
+    const toMap = (items: typeof simulation.affectedTrips) => new Map(items.map((item): [string, [string, number]] => [item.trip.id, [item.firstOverDate, item.excessDays]]));
+    assert.deepEqual(toMap(simulation.affectedTrips), expected.affected, "affected trips run " + run);
+    assert.deepEqual(toMap(simulation.worsenedTrips), expected.worsened, "worsened trips run " + run);
+    if (expected.affected.size || expected.worsened.size) impactedRuns++;
+    const forecast = maxSafeStay(rule, trips, rule.region, start);
+    if (forecast.lastSafeDate) assert.equal(simulateTrip(rule, trips, { ...candidate, start, end: forecast.lastSafeDate }).safe, true, "last safe date is safe, run " + run);
+    if (forecast.firstOverDate) assert.equal(simulateTrip(rule, trips, { ...candidate, start, end: forecast.firstOverDate }).safe, false, "first over date is unsafe, run " + run);
+  }
+  assert(impactedRuns >= 10, "scenarios with later-trip impacts: " + impactedRuns);
+});
+
+// Country catalog: custom rules, rule matching and state normalization.
+test("regra com warning zero não alerta um histórico vazio", () => {
+  const rule = { ...schengen, warningAt: 0 };
+  assert.equal(statusFor(rule, [], "2026-09-18").status, "ok");
+  assert.equal(statusFor(rule, [trip("one", "schengen", "2026-09-18", "2026-09-18")], "2026-09-18").status, "warning");
+  assert.equal(maxSafeStay(rule, [], "brazil", "2026-09-18").firstWarningDate, undefined);
+  assert.equal(tripStatuses([rule], [trip("s", "schengen", "2026-09-01", "2026-09-02")]).get("s")?.status, "warning");
+});
+
+test("regra customizada não soma viagens de outra regra", () => {
+  const schengenTrip = trip("schengen", "schengen", "2026-09-01", "2026-09-18");
+  const customTrip: Trip = { ...schengenTrip, id: "custom", ruleId: thailand.id, region: "other", country: "Tailândia" };
+  assert.equal(statusFor(thailand, [schengenTrip, customTrip], "2026-09-18").used, 18);
+  assert.equal(statusFor(schengen, [customTrip], "2026-09-18").used, 0);
+  assert.equal(daysInWindow([schengenTrip, customTrip], thailand, "2026-09-01", "2026-09-18"), 18);
+});
+
+test("maxSafeStay suporta janela maior que 366 dias", () => {
+  const longRule = { ...thailand, id: "long", windowDays: 800, limit: 700 };
+  const began = performance.now();
+  const result = maxSafeStay(longRule, [], longRule.region, "2026-09-18");
+  const elapsed = performance.now() - began;
+  assert.equal(result.daysAvailable, 700);
+  assert.equal(result.limitedBy, "limit");
+  assert.equal(result.firstOverDate, addDays("2026-09-18", 700));
+  assert(elapsed < 50, "maxSafeStay took " + elapsed.toFixed(1) + " ms");
+  // Built-in rule stretched the same way.
+  assert.equal(maxSafeStay({ ...brazil, windowDays: 800, limit: 700 }, [], "brazil", "2026-09-18").daysAvailable, 700);
+  // A window no longer than the limit never goes over on its own: the search stops after one year.
+  assert.equal(maxSafeStay({ ...brazil, windowDays: 100, limit: 100 }, [], "brazil", "2026-09-18").daysAvailable, 367);
+});
+
+test("maxSafeStay: configurações absurdas continuam rápidas", () => {
+  const began = performance.now();
+  // Window and limit are capped at 3660 days (10 years); the worst case searches 3659 days over a 3660-day window.
+  const result = maxSafeStay({ ...thailand, limit: 3659, windowDays: 1e9 }, [], "other", "2026-09-18");
+  const elapsed = performance.now() - began;
+  assert.equal(result.daysAvailable, 3659);
+  assert.equal(statusFor({ ...thailand, limit: 1e9, windowDays: 1e9 }, [], "2026-09-18").rule.windowDays, 3660);
+  assert(elapsed < 500, "maxSafeStay took " + elapsed.toFixed(1) + " ms");
+});
+
+test("simulateTrip, maxSafeStay e tripStatuses: regra customizada e regras nativas não se misturam", () => {
+  const brazilTrip = trip("br", "brazil", "2027-01-01", "2027-03-31"); // 90 dias
+  const thaiTrip: Trip = { id: "th", ruleId: thailand.id, region: "other", country: "Tailândia", start: "2027-04-01", end: "2027-05-30" }; // 60 dias
+  const trips = [brazilTrip, thaiTrip];
+  // Custom rule counts only its own trips.
+  const thai = simulateTrip(thailand, trips, { region: "other", ruleId: thailand.id, start: "2027-06-01", end: "2027-06-01" });
+  assert.equal(thai.maxUsed, 61);
+  assert.equal(thai.safe, false);
+  // Stays that do not count add nothing: maxUsed is only the saved thai days, exactly at the limit.
+  for (const other of [{ region: "brazil" as const }, { region: "other" as const, ruleId: japan.id }]) {
+    const result = simulateTrip(thailand, trips, { ...other, start: "2027-06-01", end: "2027-06-10" });
+    assert.deepEqual([result.maxUsed, result.safe], [60, true]);
+  }
+  assert.equal(maxSafeStay(thailand, trips, thailand.region, "2027-06-01").daysAvailable, 0);
+  assert.equal(maxSafeStay(thailand, [brazilTrip], thailand.region, "2027-06-01").daysAvailable, 60);
+  // Built-in rules never count custom-rule trips, nor a candidate under a custom rule.
+  assert.equal(simulateTrip(brazil, trips, { region: "brazil", start: "2027-06-01", end: "2027-06-01" }).maxUsed, 91);
+  const thaiUnderBrazil = simulateTrip(brazil, trips, { region: "other", ruleId: thailand.id, start: "2027-06-01", end: "2027-06-10" });
+  assert.deepEqual([thaiUnderBrazil.maxUsed, thaiUnderBrazil.safe], [90, true]);
+  assert.equal(maxSafeStay(brazil, [thaiTrip], "brazil", "2027-04-01").daysAvailable, 180);
+  // A stay outside the rule never counts toward it, so the rule never limits it (search stops after one year).
+  assert.deepEqual([maxSafeStay(brazil, [brazilTrip], "other", "2027-04-01").limitedBy, maxSafeStay(brazil, [brazilTrip], "brazil", "2027-04-01").limitedBy], [undefined, "limit"]);
+  // A thai stay right before the saved thai trip pushes it over; the Brazil trip is untouched.
+  const before = simulateTrip(thailand, trips, { region: "other", ruleId: thailand.id, start: "2027-03-20", end: "2027-03-25" });
+  assert.deepEqual(before.affectedTrips.map((item) => item.trip.id), ["th"]);
+  const statuses = tripStatuses([...DEFAULT_RULES, thailand], trips);
+  assert.equal(statuses.get("br")?.maxUsed, 90);
+  assert.equal(statuses.get("th")?.maxUsed, 60);
+  assert.equal(statuses.get("th")?.status, "warning");
+  assert.equal(tripStatuses(DEFAULT_RULES, trips).get("th")?.status, "none");
+});
+
+test("viagem 'Outro' sem regra não conta para nenhuma regra", () => {
+  const ruleless: Trip = { id: "o", region: "other", country: "Tailândia", start: "2027-01-01", end: "2027-03-31" };
+  const rules = [...DEFAULT_RULES, thailand];
+  assert.equal(ruleForTrip(rules, ruleless), undefined);
+  for (const rule of rules) {
+    assert.equal(tripMatchesRule(ruleless, rule), false, rule.id);
+    assert.equal(statusFor(rule, [ruleless], "2027-03-31").used, 0, rule.id);
+  }
+  assert.equal(tripStatuses(rules, [ruleless]).get("o")?.status, "none");
+  assert.equal(simulateTrip(thailand, [ruleless], { region: "other", ruleId: thailand.id, start: "2027-04-01", end: "2027-04-01" }).maxUsed, 1);
+  // Legacy built-in trips without ruleId still count toward their region's rule.
+  assert.equal(ruleForTrip(rules, trip("b", "brazil", "2027-01-01", "2027-01-02"))?.id, "brazil");
+});
+
+test("findConflicts: regra customizada e Brasil são lugares diferentes", () => {
+  const brazilTrip = trip("br", "brazil", "2027-01-01", "2027-01-31");
+  const thaiTrip: Trip = { id: "th", ruleId: thailand.id, region: "other", country: "Tailândia", start: "2027-01-20", end: "2027-02-10" };
+  const ruleless: Trip = { id: "o", region: "other", country: "Peru", start: "2027-01-25", end: "2027-01-26" };
+  const legacyBrazil = trip("br-old", "brazil", "2027-01-15", "2027-01-16");
+  const thaiCandidate = { region: "other" as const, ruleId: thailand.id, start: "2027-01-10", end: "2027-01-30" };
+  const conflicts = findConflicts([brazilTrip, thaiTrip, ruleless, legacyBrazil], thaiCandidate);
+  assert.deepEqual(conflicts.otherRegion.map((item) => item.id), ["br", "o", "br-old"]);
+  assert.deepEqual(conflicts.sameRegion.map((item) => item.id), ["th"]);
+  const brazilCandidate = { region: "brazil" as const, ruleId: "brazil", start: "2027-01-10", end: "2027-01-30" };
+  const fromBrazil = findConflicts([brazilTrip, thaiTrip, ruleless, legacyBrazil], brazilCandidate);
+  assert.deepEqual(fromBrazil.sameRegion.map((item) => item.id), ["br", "br-old"]); // ruleId "brazil" and legacy region "brazil" are the same place
+  assert.deepEqual(fromBrazil.otherRegion.map((item) => item.id), ["th", "o"]);
+  assert.deepEqual(findConflicts([thaiTrip], { ...thaiCandidate, ruleId: japan.id }).otherRegion.map((item) => item.id), ["th"]);
+  assert.deepEqual(findConflicts([ruleless], { region: "other", start: "2027-01-25", end: "2027-01-25" }).sameRegion.map((item) => item.id), ["o"]);
+});
+
+test("earliestEntryFor: regra customizada conta só as próprias viagens e não sobrepõe outras", () => {
+  const thaiTrip: Trip = { id: "th", ruleId: thailand.id, region: "other", country: "Tailândia", start: "2027-01-01", end: "2027-03-01" }; // 60 dias
+  const brazilTrip = trip("br", "brazil", "2027-03-02", "2027-03-31");
+  const result = earliestEntryFor(thailand, [thaiTrip, brazilTrip], 30, "2027-03-02");
+  assert(result);
+  assert.equal(inclusiveDays(result.start, result.end), 30);
+  const candidate = { region: "other" as const, ruleId: thailand.id, ...result };
+  assert.equal(simulateTrip(thailand, [thaiTrip, brazilTrip], candidate).safe, true);
+  assert.equal(simulateTrip(thailand, [thaiTrip, brazilTrip], { ...candidate, start: addDays(result.start, -1), end: addDays(result.end, -1) }).safe, false);
+  assert.deepEqual(findConflicts([thaiTrip, brazilTrip], candidate), { otherRegion: [], sameRegion: [] });
+  // Brazil days never block the thai rule: with only the Brazil trip, the first free day after it is the answer.
+  assert.equal(earliestEntryFor(thailand, [brazilTrip], 30, "2027-03-02")?.start, "2027-04-01");
+  assert.equal(earliestEntryFor(thailand, [], 61, "2027-03-02"), null);
+});
+
+test("estado preserva regras customizadas e rejeita viagens sem regra", () => {
+  const valid = normalizeState({ rules: [...DEFAULT_RULES, thailand], trips: [{ id: "t", ruleId: thailand.id, region: "other", country: "Tailândia", start: "2026-09-01", end: "2026-09-02" }] });
+  assert.equal(valid?.rules.some((rule) => rule.id === thailand.id), true);
+  assert.equal(valid?.trips[0]?.ruleId, thailand.id);
+  assert.equal(normalizeState({ rules: DEFAULT_RULES, trips: [{ id: "bad", ruleId: "missing", region: "other", country: "X", start: "2026-09-01", end: "2026-09-02" }] }), null);
+  assert.equal(normalizeState({ rules: DEFAULT_RULES, trips: [{ id: "bad", ruleId: 7, region: "brazil", country: "X", start: "2026-09-01", end: "2026-09-02" }] }), null);
+});
+
+test("estado rejeita regras inválidas ou duplicadas e limita tamanhos", () => {
+  assert.equal(normalizeState({ rules: [thailand, thailand], trips: [] }), null);
+  assert.equal(normalizeState({ rules: [{ ...thailand, id: "" }], trips: [] }), null);
+  assert.equal(normalizeState({ rules: [{ ...thailand, id: "x".repeat(101) }], trips: [] }), null);
+  assert.equal(normalizeState({ rules: [{ ...thailand, region: "mars" }], trips: [] }), null);
+  assert.equal(normalizeState({ rules: [{ id: "custom-x", label: "X", region: "other" }], trips: [] }), null); // custom rule without numbers
+  const state = normalizeState({
+    rules: [{ ...thailand, label: "  " + "L".repeat(200), countryCode: " th " }, { ...thailand, id: "custom-br", region: "brazil" }, { id: "brazil", label: "Brasil", region: "other" }],
+    trips: [{ id: "n", ruleId: thailand.id, region: "other", country: "Tailândia", start: "2026-09-01", end: "2026-09-02", notes: "n".repeat(900) }],
+  });
+  assert(state);
+  const custom = state.rules.find((rule) => rule.id === thailand.id);
+  assert.equal(custom?.label.length, 80);
+  assert.equal(custom?.countryCode, "TH");
+  assert.equal(state.rules.find((rule) => rule.id === "custom-br")?.region, "other"); // custom rules always live in "other"
+  assert.deepEqual(state.rules.find((rule) => rule.id === "brazil"), brazil); // built-in keeps its region and numbers
+  assert.equal(state.trips[0].notes?.length, 500);
+  assert.equal(decodeState("A".repeat(700_001)), null);
+});
+
+test("estado: viagem sob uma regra assume a região da regra", () => {
+  const state = normalizeState({ rules: [...DEFAULT_RULES, thailand], trips: [{ id: "t", ruleId: thailand.id, region: "schengen", country: "Tailândia", start: "2026-09-01", end: "2026-09-02" }, { id: "b", ruleId: "brazil", region: "other", country: "Brazil", start: "2026-10-01", end: "2026-10-02" }] });
+  assert.equal(state?.trips[0].region, "other");
+  assert.equal(state?.trips[1].region, "brazil");
+});
+
+test("migra regras legadas sem código de país", () => {
+  const state = normalizeState({
+    trips: [{ id: "legacy", region: "brazil", country: "Brazil", start: "2026-01-01", end: "2026-01-02" }],
+    rules: [
+      { id: "brazil", label: "Brasil", region: "brazil", limit: 180, windowDays: 360, warningAt: 150 },
+      { id: "schengen", label: "Schengen", region: "schengen", limit: 90, windowDays: 180, warningAt: 75 },
+    ],
+  });
+  assert.equal(state?.rules.find((rule) => rule.id === "brazil")?.countryCode, "BR");
+  assert.equal(state?.rules.find((rule) => rule.id === "schengen")?.countryCode, "SCHENGEN");
+  assert.equal(state?.trips[0]?.ruleId, "brazil");
+});
+
+test("preserva viagem legada de outro país sem misturá-la a regras customizadas", () => {
+  const state = normalizeState({
+    // The country even matches the custom rule's label: it still stays rule-less rather than being silently assigned.
+    trips: [{ id: "legacy", region: "other", country: "Tailândia", start: "2026-01-01", end: "2026-01-02" }],
+    rules: [...DEFAULT_RULES, thailand],
+  });
+  assert(state);
+  assert.equal(state.trips[0].ruleId, undefined);
+  assert.equal("ruleId" in state.trips[0], false);
+  assert.equal(state.rules.length, 3); // no "Outro (revisar)" placeholder rule
+  const custom = state.rules.find((rule) => rule.id === thailand.id);
+  assert(custom);
+  assert.equal(statusFor(custom, state.trips, "2026-01-02").used, 0);
+});
+
+test("estado produzido pelo app sobrevive a normalizeState e ao link de compartilhamento sem mudanças", () => {
+  const state = {
+    rules: [...DEFAULT_RULES, thailand],
+    trips: [
+      { id: "b", ruleId: "brazil", region: "brazil" as const, country: "Brazil", start: "2026-01-01", end: "2026-01-10" },
+      { id: "s", ruleId: "schengen", region: "schengen" as const, country: "Italy", start: "2026-02-01", end: "2026-02-10", notes: "Roma" },
+      { id: "t", ruleId: thailand.id, region: "other" as const, country: "Tailândia", start: "2026-03-01", end: "2026-03-10" },
+      { id: "o", region: "other" as const, country: "Peru", start: "2026-04-01", end: "2026-04-10" }, // "Outro (sem regra)"
+    ],
+  };
+  const once = normalizeState(JSON.parse(JSON.stringify(state)));
+  assert.deepEqual(JSON.parse(JSON.stringify(once)), state);
+  assert.deepEqual(normalizeState(once), once);
+  assert.deepEqual(decodeState(encodeState(state)), once);
+  // Legacy built-in trips gain their ruleId once, then stay stable.
+  const legacy = normalizeState({ rules: DEFAULT_RULES, trips: [{ id: "l", region: "schengen", country: "Italy", start: "2026-01-01", end: "2026-01-02" }] });
+  assert.equal(legacy?.trips[0].ruleId, "schengen");
+  assert.deepEqual(normalizeState(legacy), legacy);
 });

@@ -46,3 +46,5 @@
 .annual-day.forecast-blocked{background:repeating-linear-gradient(135deg,#f3efe8 0 4px,#fff 4px 8px);color:#784713}
 .year-month-grid .annual-day.selected-range.forecast-blocked:not(.selected-end):not(.selected-start){background:#f6e6cf;border-color:#e2c08f;color:#784713}
 .now-limit-reason{color:var(--muted);font-size:12px;line-height:1.45}
+/* Rule picker: one option per rule plus "Outro (sem regra)"; wraps into rows instead of scrolling sideways */
+.planner-region{min-width:0;flex:1}.planner-toolbar .segmented.rule-picker{grid-template-columns:repeat(auto-fit,minmax(92px,1fr));max-width:100%}.segmented.rule-picker button{min-width:0;padding:6px 8px;line-height:1.2;overflow-wrap:anywhere}
