@@ -21,3 +21,4 @@
 .planner-region .segmented .region-option.selected.schengen,.modal .segmented .region-option.selected.schengen{background:#003399;color:#fff}
 .planner-region .segmented .region-option.selected.other,.modal .segmented .region-option.selected.other{background:#9c7a55;color:#fff}
 @media(max-width:700px){.date-fields{grid-template-columns:1fr}.date-fields .field-group{margin-bottom:14px}.modal{max-width:100%;overflow-x:hidden}.modal-actions{gap:8px}}
+.planner-toolbar .segmented{grid-template-columns:repeat(auto-fit,minmax(92px,1fr));max-width:100%}.planner-region{min-width:0;flex:1}

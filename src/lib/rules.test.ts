@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { DEFAULT_RULES, addDays, analyzeTrip, daysInWindow, inclusiveDays, maxSafeStay, statusFor } from "./rules";
+import { normalizeState } from "./share";
 import type { Trip } from "./types";
 
 const brazil = DEFAULT_RULES[0];
@@ -30,7 +31,7 @@ test("Schengen respeita 90 em 180 dias e não soma sobreposições", () => {
   const overlapping = trip("overlap", "schengen", addDays(asOf, -20), addDays(asOf, 10));
   const outside = trip("outside", "schengen", addDays(asOf, -180), addDays(asOf, -180));
 
-  assert.equal(daysInWindow([first, overlapping], "schengen", addDays(asOf, -179), asOf), 90);
+  assert.equal(daysInWindow([first, overlapping], schengen, addDays(asOf, -179), asOf), 90);
   assert.equal(statusFor(schengen, [first, outside], asOf).used, 90);
   assert.equal(statusFor(schengen, [first], asOf).status, "warning");
   assert.equal(statusFor(schengen, [trip("over", "schengen", addDays(asOf, -90), asOf)], asOf).status, "over");
@@ -110,7 +111,7 @@ test("analyzeTrip: overlapping não duplica dias", () => {
   const asOf = "2026-09-18";
   const trip1 = trip("trip1", "schengen", addDays(asOf, -40), addDays(asOf, -20)); // 21 dias
   const trip2 = trip("trip2", "schengen", addDays(asOf, -30), asOf); // 31 dias, overlap -30 a -20 = 11 dias
-  const window = daysInWindow([trip1, trip2], "schengen", addDays(asOf, -179), asOf);
+  const window = daysInWindow([trip1, trip2], schengen, addDays(asOf, -179), asOf);
   assert.equal(window, 41); // 21 + 31 - 11 = 41
 });
 
@@ -119,8 +120,8 @@ test("analyzeTrip: dias antigos saem corretamente da rolling window", () => {
   const windowStart = addDays(asOf, -179);
   const outside = trip("outside", "schengen", addDays(asOf, -180), addDays(asOf, -180));
   const inside = trip("inside", "schengen", addDays(asOf, -178), asOf);
-  assert.equal(daysInWindow([outside], "schengen", windowStart, asOf), 0);
-  assert.equal(daysInWindow([inside], "schengen", windowStart, asOf), 179);
+  assert.equal(daysInWindow([outside], schengen, windowStart, asOf), 0);
+  assert.equal(daysInWindow([inside], schengen, windowStart, asOf), 179);
 });
 
 test("maxSafeStay: encontra o último dia permitido", () => {
@@ -164,6 +165,31 @@ test("maxSafeStay: datas invertidas", () => {
   const result = analyzeTrip(schengen, [], "schengen", "2026-09-20", "2026-09-10");
   assert.equal(result.safe, true);
   assert.equal(result.maxUsed, 0);
+});
+
+test("regra com warning zero não alerta um histórico vazio", () => {
+  assert.equal(statusFor({ ...schengen, warningAt: 0 }, [], "2026-09-18").status, "ok");
+});
+
+test("regra customizada não soma viagens de outra regra", () => {
+  const custom = { ...schengen, id: "custom-thailand", label: "Tailândia", countryCode: "TH", region: "other" as const };
+  const schengenTrip = trip("schengen", "schengen", "2026-09-01", "2026-09-18");
+  const customTrip: Trip = { ...schengenTrip, id: "custom", ruleId: custom.id, region: "other", country: "Thailand" };
+  assert.equal(statusFor(custom, [schengenTrip, customTrip], "2026-09-18").used, 18);
+});
+
+test("maxSafeStay suporta janela maior que 366 dias", () => {
+  const longRule = { ...brazil, id: "long", windowDays: 800, limit: 700 };
+  const result = maxSafeStay(longRule, [], "other", "2026-09-18");
+  assert.equal(result.daysAvailable, 700);
+});
+
+test("estado preserva regras customizadas e rejeita viagens sem regra", () => {
+  const custom = { id: "custom-th", label: "Tailândia", countryCode: "TH", region: "other" as const, limit: 60, windowDays: 180, warningAt: 45 };
+  const valid = normalizeState({ rules: [...DEFAULT_RULES, custom], trips: [{ id: "t", ruleId: custom.id, region: "other", country: "Tailândia", start: "2026-09-01", end: "2026-09-02" }] });
+  assert.equal(valid?.rules.some((rule) => rule.id === custom.id), true);
+  assert.equal(valid?.trips[0]?.ruleId, custom.id);
+  assert.equal(normalizeState({ rules: DEFAULT_RULES, trips: [{ id: "bad", ruleId: "missing", region: "other", country: "X", start: "2026-09-01", end: "2026-09-02" }] }), null);
 });
 
 // Acceptance test scenarios
@@ -211,4 +237,27 @@ test("acceptance: overlap geográfico bloqueado", () => {
   const brazil1 = trip("br1", "brazil", "2026-09-10", "2026-09-20");
   const schengen1 = trip("sch1", "schengen", "2026-09-15", "2026-09-25");
   assert(brazil1.start <= schengen1.end && brazil1.end >= schengen1.start);
+});
+
+test("migra regras legadas sem código de país", () => {
+  const state = normalizeState({
+    trips: [{ id: "legacy", region: "brazil", country: "Brazil", start: "2026-01-01", end: "2026-01-02" }],
+    rules: [
+      { id: "brazil", label: "Brasil", region: "brazil", limit: 180, windowDays: 360, warningAt: 150 },
+      { id: "schengen", label: "Schengen", region: "schengen", limit: 90, windowDays: 180, warningAt: 75 },
+    ],
+  });
+  assert.equal(state?.rules.find((rule) => rule.id === "brazil")?.countryCode, "BR");
+  assert.equal(state?.trips[0]?.ruleId, "brazil");
+});
+
+test("preserva viagem legada de outro país sem misturá-la a regras customizadas", () => {
+  const state = normalizeState({
+    trips: [{ id: "legacy", region: "other", country: "Unknown", start: "2026-01-01", end: "2026-01-02" }],
+    rules: [...DEFAULT_RULES, { id: "custom-th", label: "Tailândia", countryCode: "TH", region: "other", limit: 60, windowDays: 180, warningAt: 45 }],
+  });
+  assert.equal(state?.trips[0]?.ruleId, "legacy-other");
+  const custom = state?.rules.find((rule) => rule.id === "custom-th");
+  assert(custom);
+  assert.equal(statusFor(custom, state?.trips || [], "2026-01-02").used, 0);
 });

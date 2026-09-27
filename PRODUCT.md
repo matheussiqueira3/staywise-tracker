@@ -2,11 +2,11 @@
 
 ## Core Question
 
-> “Given where I've been and where I want to go, how long can I stay in each region, and when do conflicts occur?”
+> “Given where I've been and where I want to go, how long can I stay under this country's rule, and when does the scenario exceed the limit?”
 
 ## Primary Flow
 
-1. Choose region (Brazil / Schengen)
+1. Choose a country or regime from the rule catalog
 2. Choose entry date
 3. Staywise automatically calculates:
    - Last safe day
@@ -29,7 +29,7 @@
 - Track trips by date range and region.
 - Show rolling availability (days remaining in window).
 - Flag conflicts before saving.
-- Persist to personal workspace (no shared state).
+- Persist to the current shared workspace, with an explicit last-write-wins warning.
 
 ## What This App Does NOT Do
 
@@ -37,7 +37,7 @@
 - Integrate with airlines, immigration, or tax systems.
 - Suggest travel.
 - Use AI.
-- Support multiple users.
+- Provide personal accounts or confidential storage.
 - Render a fixed calendar horizon.
 
 ## Data Model
@@ -45,16 +45,20 @@
 ```ts
 type Trip = {
   id: string;
-  region: “BR” | “SCHENGEN”;
+  ruleId: string;
+  region: “brazil” | “schengen” | “other”;
   start: string;   // ISO date
   end: string;     // ISO date
   notes?: string;
 };
 
 type Rule = {
-  region: “BR” | “SCHENGEN”;
-  windowDays: number;      // 180 or 90
-  rollingWindow: number;   // 365 or 365
+  id: string;
+  label: string;
+  countryCode: string;
+  limit: number;
+  windowDays: number;
+  warningAt: number;
 };
 
 type Status = {
@@ -66,4 +70,4 @@ type Status = {
 
 ## Success
 
-The app answers “can I stay?” and “until when?” in one interaction after entry selection.
+The app answers “can I stay?” and “until when?” in one interaction after country and entry selection. Scenario planning is the primary flow; saved history exists to make future calculations accurate.
