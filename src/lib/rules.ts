@@ -19,18 +19,36 @@ export function daysInWindow(trips: Trip[], region: Region, start: string, end: 
   }
   return occupied.size;
 }
-export function statusFor(rule: Rule, trips: Trip[], asOf: string): RuleStatus {
+function sanitizeRule(rule: Rule): Rule {
   const limit = Math.max(1, Math.floor(rule.limit) || 1);
-  const safeRule = { ...rule, limit, windowDays: Math.max(1, Math.floor(rule.windowDays) || 1), warningAt: Math.min(limit, Math.max(0, Math.floor(rule.warningAt) || 0)) };
+  return { ...rule, limit, windowDays: Math.max(1, Math.floor(rule.windowDays) || 1), warningAt: Math.min(limit, Math.max(0, Math.floor(rule.warningAt) || 0)) };
+}
+function levelFor(rule: Rule, used: number): RuleStatus["status"] { return used > rule.limit ? "over" : used >= rule.warningAt ? "warning" : "ok"; }
+export function statusFor(rule: Rule, trips: Trip[], asOf: string): RuleStatus {
+  const safeRule = sanitizeRule(rule);
   const windowStart = addDays(asOf, -(safeRule.windowDays - 1));
   const used = daysInWindow(trips, safeRule.region, windowStart, asOf);
   const remaining = Math.max(0, safeRule.limit - used);
-  return { rule: safeRule, asOf, used, remaining, windowStart, status: used > safeRule.limit ? "over" : used >= safeRule.warningAt ? "warning" : "ok" };
+  return { rule: safeRule, asOf, used, remaining, windowStart, status: levelFor(safeRule, used) };
 }
 export function statusForDate(rule: Rule, trips: Trip[], date: string): RuleStatus { return statusFor(rule, trips, date); }
-export function formatDate(value: string, options?: Intl.DateTimeFormatOptions): string { return new Intl.DateTimeFormat("pt-BR", options || { day: "2-digit", month: "short" }).format(parseDate(value)); }
+const formatters = new Map<string, Intl.DateTimeFormat>();
+/** Formats a date key in pt-BR. Always in UTC: keys are parsed at 12:00Z, so a local zone at UTC+12..+14 would show the next day. */
+export function formatDate(value: string, options?: Intl.DateTimeFormatOptions): string {
+  const resolved: Intl.DateTimeFormatOptions = { ...(options || { day: "2-digit", month: "short" }), timeZone: "UTC" };
+  const key = JSON.stringify(resolved);
+  let formatter = formatters.get(key);
+  if (!formatter) { formatter = new Intl.DateTimeFormat("pt-BR", resolved); formatters.set(key, formatter); }
+  return formatter.format(parseDate(value));
+}
 export function formatFullDate(value: string): string { return formatDate(value, { day: "2-digit", month: "long", year: "numeric" }); }
-export function isoToday(): string { return toDateKey(new Date()); }
+/** Local calendar date of `now` (not UTC: late evening in São Paulo is still "today"). */
+export function isoToday(now: Date = new Date()): string {
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+}
+
+/** The limit rule for a region, or undefined when the region has no rule (e.g. "other"). */
+export function ruleForRegion(rules: Rule[], region: Region): Rule | undefined { return rules.find((rule) => rule.region === region); }
 
 export type TripAnalysis = {
   safe: boolean;
@@ -41,77 +59,269 @@ export type TripAnalysis = {
   maxUsedDate: string;
 };
 
+export type AffectedTrip = { trip: Trip; firstOverDate: string; excessDays: number };
+
+export type TripSimulation = TripAnalysis & {
+  /** Days above the limit at the worst day of the candidate trip itself. */
+  excessDays: number;
+  /** Saved trips that are within the limit today but would go over if the candidate were saved. */
+  affectedTrips: AffectedTrip[];
+  /** Saved trips that already exceed the limit on their own and would exceed by more; excessDays = added days. */
+  worsenedTrips: AffectedTrip[];
+};
+
 export type MaxSafeStay = {
   start: string;
   lastSafeDate: string | null;
   daysAvailable: number;
   firstOverDate?: string;
+  /** "limit": staying one more day exceeds the rule. "later-trip": it would push a saved later trip over. */
+  limitedBy?: "limit" | "later-trip";
+  blockingTrip?: AffectedTrip;
+  /** First day of this stay at or above the rule's warningAt (still within the limit), if any. */
+  firstWarningDate?: string;
 };
 
-export function analyzeTrip(rule: Rule, trips: Trip[], region: Region, tripStart: string, tripEnd: string): TripAnalysis {
-  if (tripStart > tripEnd) return { safe: true, maxUsed: 0, maxUsedDate: tripStart };
+/** Verdict for one saved trip, evaluated on every day of it against all saved trips. */
+export type TripStatus = { tripId: string; status: "ok" | "warning" | "over" | "none"; maxUsed: number; excessDays: number; firstOverDate?: string; firstWarningDate?: string };
+
+type Candidate = Pick<Trip, "region" | "start" | "end"> & { id?: string };
+
+// Day-by-day occupancy for one region over [from, from + size). Rolling sums over it make every
+// calculation linear in the number of days instead of re-scanning all trips for each day.
+type Span = { trip: Trip; first: number; last: number };
+type Ledger = { from: string; size: number; occupied: Uint8Array; spans: Span[] };
+
+function createLedger(trips: Trip[], region: Region, from: string, to: string): Ledger {
+  const size = inclusiveDays(from, to);
+  const occupied = new Uint8Array(size);
+  const spans: Span[] = [];
+  for (const trip of trips) {
+    if (trip.region !== region || trip.start > trip.end || !overlaps(trip, from, to)) continue;
+    const first = trip.start > from ? inclusiveDays(from, trip.start) - 1 : 0;
+    const last = trip.end < to ? inclusiveDays(from, trip.end) - 1 : size - 1;
+    occupied.fill(1, first, last + 1);
+    spans.push({ trip, first, last });
+  }
+  return { from, size, occupied, spans: spans.sort((a, b) => a.first - b.first) };
+}
+
+function rollingUsed(occupied: Uint8Array, windowDays: number): Int32Array {
+  const used = new Int32Array(occupied.length);
+  let sum = 0;
+  for (let index = 0; index < occupied.length; index++) {
+    sum += occupied[index];
+    if (index >= windowDays) sum -= occupied[index - windowDays];
+    used[index] = sum;
+  }
+  return used;
+}
+
+type LaterImpact = { kind: "affected" | "worsened"; item: AffectedTrip };
+
+/**
+ * Ledger range that also covers the whole extent (plus its window) of every same-region trip with a day in
+ * (reachFrom, reachTo], so "already over" can be judged on the entire saved trip, not only on the days in reach.
+ */
+function extendedRange(trips: Trip[], region: Region, windowDays: number, from: string, to: string, reachFrom: string, reachTo: string): { from: string; to: string } {
+  for (const trip of trips) {
+    if (trip.region !== region || trip.start > trip.end || trip.end <= reachFrom || trip.start > reachTo) continue;
+    const tripFrom = addDays(trip.start, -(windowDays - 1));
+    if (tripFrom < from) from = tripFrom;
+    if (trip.end > to) to = trip.end;
+  }
+  return { from, to };
+}
+
+/**
+ * Effect of the candidate on a saved trip whose days in (reachLo - 1, reachHi] the candidate's window reaches
+ * (`used` with the candidate, `baseUsed` without). A day is impacted when it is over the limit and the candidate
+ * adds to it. The trip is "worsened" when it is already over on any of its days without the candidate
+ * (excessDays = most days the candidate adds above the limit on one day), otherwise "affected"
+ * (excessDays = worst excess with the candidate). The ledger must cover the whole span unclipped.
+ */
+function laterImpact(ledger: Ledger, span: Span, reachLo: number, reachHi: number, used: Int32Array, baseUsed: Int32Array, limit: number): LaterImpact | undefined {
+  const lo = Math.max(span.first, reachLo);
+  const hi = Math.min(span.last, reachHi);
+  let first = -1;
+  let affectedExcess = 0;
+  let addedExcess = 0;
+  for (let index = lo; index <= hi; index++) {
+    const withCandidate = used[index];
+    if (withCandidate <= limit || withCandidate <= baseUsed[index]) continue;
+    if (first < 0) first = index;
+    affectedExcess = Math.max(affectedExcess, withCandidate - limit);
+    addedExcess = Math.max(addedExcess, withCandidate - Math.max(baseUsed[index], limit));
+  }
+  if (first < 0) return undefined;
+  let alreadyOver = false;
+  for (let index = span.first; index <= span.last && !alreadyOver; index++) alreadyOver = baseUsed[index] > limit;
+  const firstOverDate = addDays(ledger.from, first);
+  return alreadyOver
+    ? { kind: "worsened", item: { trip: span.trip, firstOverDate, excessDays: addedExcess } }
+    : { kind: "affected", item: { trip: span.trip, firstOverDate, excessDays: affectedExcess } };
+}
+
+function simulate(rule: Rule, trips: Trip[], candidate: Candidate, withAffected: boolean): TripSimulation {
+  const safeRule = sanitizeRule(rule);
+  const { start, end } = candidate;
+  if (start > end) return { safe: true, maxUsed: 0, maxUsedDate: start, excessDays: 0, affectedTrips: [], worsenedTrips: [] };
+  const others = candidate.id ? trips.filter((trip) => trip.id !== candidate.id) : trips;
+  const reach = addDays(end, safeRule.windowDays - 1);
+  const { from, to } = withAffected
+    ? extendedRange(others, safeRule.region, safeRule.windowDays, addDays(start, -(safeRule.windowDays - 1)), reach, end, reach)
+    : { from: addDays(start, -(safeRule.windowDays - 1)), to: end };
+  const base = createLedger(others, safeRule.region, from, to);
+  const withCandidate = base.occupied.slice();
+  const startIndex = inclusiveDays(from, start) - 1;
+  const endIndex = inclusiveDays(from, end) - 1;
+  if (candidate.region === safeRule.region) withCandidate.fill(1, startIndex, endIndex + 1);
+  const used = rollingUsed(withCandidate, safeRule.windowDays);
 
   let maxUsed = 0;
-  let maxUsedDate = tripStart;
+  let maxUsedDate = start;
   let firstWarningDate: string | undefined;
   let firstOverDate: string | undefined;
+  for (let index = startIndex; index <= endIndex; index++) {
+    const level = levelFor(safeRule, used[index]);
+    if (used[index] > maxUsed) { maxUsed = used[index]; maxUsedDate = addDays(from, index); }
+    if (level === "warning" && !firstWarningDate) firstWarningDate = addDays(from, index);
+    if (level === "over" && !firstOverDate) firstOverDate = addDays(from, index);
+  }
 
-  for (let currentEnd = tripStart; currentEnd <= tripEnd; currentEnd = addDays(currentEnd, 1)) {
-    const testTrip: Trip = { id: "analysis", region, country: "", start: tripStart, end: currentEnd };
-    const testTrips = [...trips, testTrip];
-    const status = statusFor(rule, testTrips, currentEnd);
-
-    if (status.used > maxUsed) {
-      maxUsed = status.used;
-      maxUsedDate = currentEnd;
-    }
-
-    if (status.status === "warning" && !firstWarningDate) {
-      firstWarningDate = currentEnd;
-    }
-
-    if (status.status === "over" && !firstOverDate) {
-      firstOverDate = currentEnd;
+  const affectedTrips: AffectedTrip[] = [];
+  const worsenedTrips: AffectedTrip[] = [];
+  if (withAffected && candidate.region === safeRule.region) {
+    const baseUsed = rollingUsed(base.occupied, safeRule.windowDays);
+    const reachIndex = endIndex + safeRule.windowDays - 1;
+    for (const span of base.spans) {
+      if (span.last <= endIndex || span.first > reachIndex) continue;
+      const impact = laterImpact(base, span, endIndex + 1, reachIndex, used, baseUsed, safeRule.limit);
+      if (impact) (impact.kind === "affected" ? affectedTrips : worsenedTrips).push(impact.item);
     }
   }
 
-  const lastSafeDate = firstOverDate ? addDays(firstOverDate, -1) : undefined;
-
   return {
-    safe: !firstOverDate,
+    safe: !firstOverDate && affectedTrips.length === 0 && worsenedTrips.length === 0,
     firstWarningDate,
     firstOverDate,
-    lastSafeDate,
+    lastSafeDate: firstOverDate ? addDays(firstOverDate, -1) : undefined,
     maxUsed,
     maxUsedDate,
+    excessDays: Math.max(0, maxUsed - safeRule.limit),
+    affectedTrips,
+    worsenedTrips,
   };
 }
 
+/** Evaluates every day of a proposed trip against the rule. Does not look past the trip's exit. */
+export function analyzeTrip(rule: Rule, trips: Trip[], region: Region, tripStart: string, tripEnd: string): TripAnalysis {
+  const { safe, firstWarningDate, firstOverDate, lastSafeDate, maxUsed, maxUsedDate } = simulate(rule, trips, { region, start: tripStart, end: tripEnd }, false);
+  return { safe, firstWarningDate, firstOverDate, lastSafeDate, maxUsed, maxUsedDate };
+}
+
+/**
+ * Evaluates every day of a proposed trip and every day of saved later trips whose window it reaches.
+ * `candidate.id` excludes the trip being edited from the saved trips.
+ */
+export function simulateTrip(rule: Rule, trips: Trip[], candidate: Candidate): TripSimulation {
+  return simulate(rule, trips, candidate, true);
+}
+
+const MAX_STAY_SEARCH_DAYS = 366;
+
+/**
+ * Last exit date for a stay starting on `entryDate` that keeps this stay within the limit and neither pushes a
+ * saved later trip over nor adds excess to one already over. Consistent with `simulateTrip(...).safe`.
+ */
 export function maxSafeStay(rule: Rule, trips: Trip[], region: Region, entryDate: string): MaxSafeStay {
-  const limit = Math.max(1, Math.floor(rule.limit) || 1);
+  const safeRule = sanitizeRule(rule);
+  const searchEnd = addDays(entryDate, MAX_STAY_SEARCH_DAYS);
+  const reach = addDays(searchEnd, safeRule.windowDays - 1);
+  const { from, to } = extendedRange(trips, safeRule.region, safeRule.windowDays, addDays(entryDate, -(safeRule.windowDays - 1)), reach, entryDate, reach);
+  const ledger = createLedger(trips, safeRule.region, from, to);
+  const baseUsed = rollingUsed(ledger.occupied, safeRule.windowDays);
+  const used = baseUsed.slice();
+  const entryIndex = inclusiveDays(from, entryDate) - 1;
+  const counts = region === safeRule.region;
   let lastSafeDate: string | null = null;
-  let firstOverDate: string | undefined;
+  let firstWarningDate: string | undefined;
 
-  for (let day = 0; day <= 366; day++) {
-    const currentDate = addDays(entryDate, day);
-    const testTrip: Trip = { id: "maxstay", region, country: "", start: entryDate, end: currentDate };
-    const testTrips = [...trips, testTrip];
-    const status = statusFor(rule, testTrips, currentDate);
-
-    if (status.used <= limit) {
-      lastSafeDate = currentDate;
-    } else if (!firstOverDate) {
-      firstOverDate = currentDate;
-      break;
+  for (let day = 0; day <= MAX_STAY_SEARCH_DAYS; day++) {
+    const index = entryIndex + day;
+    const date = addDays(entryDate, day);
+    // Adding this day only changes days [index, index + windowDays), exactly the saved days simulateTrip checks for an
+    // exit on `date`. A saved day there is impacted when it goes over the limit, since the candidate just added to it.
+    // Days not changed now were checked at an earlier exit, so this finds the first exit simulateTrip calls unsafe.
+    let impactedDay = -1;
+    if (counts && !ledger.occupied[index]) {
+      const stop = Math.min(ledger.size, index + safeRule.windowDays);
+      for (let affected = index; affected < stop; affected++) {
+        used[affected]++;
+        if (impactedDay < 0 && affected > index && ledger.occupied[affected] && used[affected] > safeRule.limit) impactedDay = affected;
+      }
     }
+    if (used[index] > safeRule.limit) return result("limit", date);
+    if (impactedDay >= 0) {
+      const span = ledger.spans.find((item) => item.first <= impactedDay && item.last >= impactedDay);
+      const impact = span && laterImpact(ledger, span, index + 1, index + safeRule.windowDays - 1, used, baseUsed, safeRule.limit);
+      if (impact) return result("later-trip", date, impact.item);
+    }
+    lastSafeDate = date;
+    if (!firstWarningDate && used[index] >= safeRule.warningAt) firstWarningDate = date;
   }
+  return result();
 
-  const daysAvailable = lastSafeDate ? inclusiveDays(entryDate, lastSafeDate) : 0;
+  function result(limitedBy?: MaxSafeStay["limitedBy"], firstOverDate?: string, blockingTrip?: AffectedTrip): MaxSafeStay {
+    return { start: entryDate, lastSafeDate, daysAvailable: lastSafeDate ? inclusiveDays(entryDate, lastSafeDate) : 0, firstOverDate, limitedBy, blockingTrip, firstWarningDate };
+  }
+}
 
-  return {
-    start: entryDate,
-    lastSafeDate,
-    daysAvailable,
-    firstOverDate,
-  };
+export type TripConflicts = { otherRegion: Trip[]; sameRegion: Trip[] };
+
+/** Saved trips overlapping the candidate's dates. Being in two regions on the same day is a conflict. */
+export function findConflicts(trips: Trip[], candidate: Candidate): TripConflicts {
+  const overlapping = trips.filter((trip) => trip.id !== candidate.id && overlaps(trip, candidate.start, candidate.end));
+  return { otherRegion: overlapping.filter((trip) => trip.region !== candidate.region), sameRegion: overlapping.filter((trip) => trip.region === candidate.region) };
+}
+
+/**
+ * First entry date on or after `from` where a genuinely new stay of `lengthDays` is safe and overlaps no saved trip of
+ * any region (days already booked in the same region add no new days, but they are not a new stay), or null.
+ */
+export function earliestEntryFor(rule: Rule, trips: Trip[], lengthDays: number, from: string, horizonDays = 730): { start: string; end: string } | null {
+  const safeRule = sanitizeRule(rule);
+  const length = Math.floor(lengthDays);
+  if (!(length >= 1) || length > safeRule.limit) return null;
+  for (let day = 0; day <= horizonDays; day++) {
+    const start = addDays(from, day);
+    const candidate = { region: safeRule.region, start, end: addDays(start, length - 1) };
+    if (trips.some((trip) => overlaps(trip, candidate.start, candidate.end))) continue;
+    if (simulate(safeRule, trips, candidate, true).safe) return { start: candidate.start, end: candidate.end };
+  }
+  return null;
+}
+
+/** The trip covering `today`, if any. */
+export function currentTrip(trips: Trip[], today: string): Trip | undefined {
+  return trips.filter((trip) => trip.start <= today && trip.end >= today).sort((a, b) => b.start.localeCompare(a.start))[0];
+}
+
+/** Trips that start after `today`, earliest first. */
+export function upcomingTrips(trips: Trip[], today: string): Trip[] {
+  return trips.filter((trip) => trip.start > today).sort((a, b) => a.start.localeCompare(b.start));
+}
+
+/** Status of every saved trip keyed by trip id, each day evaluated against all saved trips; "none" for regions without a rule. */
+export function tripStatuses(rules: Rule[], trips: Trip[]): Map<string, TripStatus> {
+  const statuses = new Map<string, TripStatus>();
+  for (const trip of trips) {
+    const rule = ruleForRegion(rules, trip.region);
+    if (!rule || trip.start > trip.end) { statuses.set(trip.id, { tripId: trip.id, status: "none", maxUsed: 0, excessDays: 0 }); continue; }
+    const safeRule = sanitizeRule(rule);
+    const { maxUsed, excessDays, firstOverDate, firstWarningDate } = simulate(safeRule, trips, { id: trip.id, region: trip.region, start: trip.start, end: trip.end }, false);
+    const status = firstOverDate ? "over" : maxUsed >= safeRule.warningAt ? "warning" : "ok";
+    statuses.set(trip.id, { tripId: trip.id, status, maxUsed, excessDays, firstOverDate, firstWarningDate });
+  }
+  return statuses;
 }

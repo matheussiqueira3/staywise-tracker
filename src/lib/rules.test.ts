@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { DEFAULT_RULES, addDays, analyzeTrip, daysInWindow, inclusiveDays, maxSafeStay, statusFor } from "./rules";
+import { DEFAULT_RULES, addDays, analyzeTrip, currentTrip, daysInWindow, earliestEntryFor, findConflicts, formatDate, formatFullDate, inclusiveDays, isoToday, maxSafeStay, parseDate, simulateTrip, statusFor, tripStatuses, upcomingTrips } from "./rules";
+import type { Rule } from "./types";
 import type { Trip } from "./types";
 
 const brazil = DEFAULT_RULES[0];
@@ -195,20 +196,370 @@ test("acceptance: período antigo sai da janela durante viagem", () => {
   assert.equal(status1.used, 0);
 });
 
-test("acceptance: navegar para 2031", () => {
-  const futureMont = "2031-01-15";
-  const days = inclusiveDays(futureMont, futureMont);
-  assert.equal(days, 1);
+test("acceptance: navegar para 2031 calcula normalmente", () => {
+  const entry = "2031-01-15";
+  const forecast = maxSafeStay(schengen, [trip("old", "schengen", "2030-11-01", "2030-11-30")], "schengen", entry);
+  assert.equal(forecast.daysAvailable, 60);
+  assert.equal(forecast.lastSafeDate, addDays(entry, 59));
 });
 
-test("acceptance: navegar para 2023", () => {
-  const pastMonth = "2023-06-15";
-  const days = inclusiveDays(pastMonth, pastMonth);
-  assert.equal(days, 1);
+test("acceptance: navegar para 2023 conta o histórico", () => {
+  const status = statusFor(schengen, [trip("past", "schengen", "2023-06-01", "2023-06-15")], "2023-06-15");
+  assert.equal(status.used, 15);
+  assert.equal(status.remaining, 75);
 });
 
 test("acceptance: overlap geográfico bloqueado", () => {
   const brazil1 = trip("br1", "brazil", "2026-09-10", "2026-09-20");
-  const schengen1 = trip("sch1", "schengen", "2026-09-15", "2026-09-25");
-  assert(brazil1.start <= schengen1.end && brazil1.end >= schengen1.start);
+  const conflicts = findConflicts([brazil1], trip("sch1", "schengen", "2026-09-15", "2026-09-25"));
+  assert.deepEqual(conflicts.otherRegion.map((item) => item.id), ["br1"]);
+  assert.equal(conflicts.sameRegion.length, 0);
+});
+
+test("findConflicts: dias adjacentes não conflitam; mesma região é listada à parte; a própria viagem é ignorada", () => {
+  const brazil1 = trip("br1", "brazil", "2026-09-10", "2026-09-20");
+  assert.equal(findConflicts([brazil1], trip("sch1", "schengen", "2026-09-21", "2026-09-25")).otherRegion.length, 0);
+  assert.deepEqual(findConflicts([brazil1], trip("br2", "brazil", "2026-09-20", "2026-09-22")).sameRegion.map((item) => item.id), ["br1"]);
+  assert.equal(findConflicts([brazil1], { ...brazil1, region: "schengen" }).otherRegion.length, 0);
+});
+
+// Regression: saving a trip that is safe on its own days used to silently push a saved later trip over the limit.
+test("simulateTrip: aponta viagem futura que passa a exceder", () => {
+  const later = trip("later", "schengen", "2027-03-01", "2027-03-30");
+  const result = simulateTrip(schengen, [later], trip("new", "schengen", "2026-12-28", "2027-02-28"));
+  assert.equal(result.firstOverDate, undefined);
+  assert.equal(result.safe, false);
+  assert.equal(result.affectedTrips.length, 1);
+  assert.equal(result.affectedTrips[0].trip.id, "later");
+  assert.equal(result.affectedTrips[0].firstOverDate, "2027-03-28");
+  assert.equal(result.affectedTrips[0].excessDays, 3);
+});
+
+test("simulateTrip: exatamente no limite é seguro, inclusive para viagens futuras", () => {
+  const later = trip("later", "schengen", "2027-03-01", "2027-03-30");
+  const result = simulateTrip(schengen, [later], trip("new", "schengen", "2026-12-31", "2027-02-28"));
+  assert.equal(result.maxUsed, 60);
+  assert.equal(result.safe, true);
+  assert.equal(result.affectedTrips.length, 0);
+  const exact = simulateTrip(schengen, [], trip("exact", "schengen", "2027-01-01", addDays("2027-01-01", 89)));
+  assert.equal(exact.maxUsed, 90);
+  assert.equal(exact.safe, true);
+  assert.equal(exact.excessDays, 0);
+});
+
+test("simulateTrip: editar uma viagem não conta a versão antiga dela", () => {
+  const saved = trip("saved", "schengen", "2027-01-01", "2027-03-31");
+  const edited = simulateTrip(schengen, [saved], { ...saved, end: "2027-03-30" });
+  assert.equal(edited.maxUsed, 89);
+  assert.equal(edited.safe, true);
+});
+
+test("simulateTrip: viagem futura que já excede sozinha é agravada, não afetada, e a nova viagem não é segura", () => {
+  const alreadyOver = trip("over", "schengen", "2027-06-01", "2027-09-30"); // 122 dias: pior dia 90 + 32 sem a nova
+  const result = simulateTrip(schengen, [alreadyOver], trip("new", "schengen", "2027-05-01", "2027-05-05"));
+  assert.equal(result.firstOverDate, undefined);
+  assert.equal(result.affectedTrips.length, 0);
+  assert.equal(result.worsenedTrips.length, 1);
+  assert.equal(result.worsenedTrips[0].trip.id, "over");
+  assert.equal(result.worsenedTrips[0].excessDays, 5); // pior dia passa de 122 para 127 na janela de 180
+  assert.equal(result.worsenedTrips[0].firstOverDate, "2027-08-25"); // 86 dias da viagem + 5 da nova = 91
+  assert.equal(result.safe, false);
+});
+
+test("simulateTrip: viagem já excedida cujo pior dia não piora não é listada", () => {
+  const alreadyOver = trip("over", "schengen", "2027-06-01", "2027-09-30");
+  // Sai da janela de 180 dias antes do pior dia (2027-09-30) e antes de qualquer dia acima de 90.
+  const result = simulateTrip(schengen, [alreadyOver], trip("new", "schengen", "2026-12-01", "2026-12-05"));
+  assert.equal(result.worsenedTrips.length, 0);
+  assert.equal(result.affectedTrips.length, 0);
+  assert.equal(result.safe, true);
+});
+
+test("maxSafeStay: para antes de agravar uma viagem futura que já excede", () => {
+  const alreadyOver = trip("over", "schengen", "2027-06-01", "2027-09-30");
+  const blocked = maxSafeStay(schengen, [alreadyOver], "schengen", "2027-04-01");
+  assert.equal(blocked.limitedBy, "later-trip");
+  assert.equal(blocked.lastSafeDate, null); // um único dia já soma ao dia 2027-08-29 (90 -> 91) e aos dias já excedidos
+  assert.equal(blocked.daysAvailable, 0);
+  assert.equal(blocked.firstOverDate, "2027-04-01");
+  assert.equal(blocked.blockingTrip?.trip.id, "over");
+  assert.equal(blocked.blockingTrip?.firstOverDate, "2027-08-29");
+  assert.equal(blocked.blockingTrip?.excessDays, 1);
+  const oneDay = simulateTrip(schengen, [alreadyOver], trip("c", "schengen", "2027-04-01", "2027-04-01"));
+  assert.equal(oneDay.safe, false);
+  assert.deepEqual(oneDay.worsenedTrips.map((item) => [item.trip.id, item.firstOverDate, item.excessDays]), [["over", "2027-08-29", 1]]);
+
+  const early = maxSafeStay(schengen, [alreadyOver], "schengen", "2027-02-01");
+  assert.equal(early.limitedBy, "later-trip");
+  assert.equal(early.lastSafeDate, "2027-03-02");
+  assert.equal(early.firstOverDate, "2027-03-03");
+  assert.equal(simulateTrip(schengen, [alreadyOver], trip("c", "schengen", "2027-02-01", "2027-03-02")).safe, true);
+  assert.equal(simulateTrip(schengen, [alreadyOver], trip("c", "schengen", "2027-02-01", "2027-03-03")).safe, false);
+});
+
+// Regression (M1): "already over" is judged on the whole saved trip, not only on the days the candidate reaches.
+test("simulateTrip: viagem futura que já excede fora do alcance da nova é agravada, não afetada", () => {
+  const long = trip("long", "schengen", "2027-04-10", "2027-07-18"); // 100 dias: excede sozinha (pior dia 100 em 2027-07-18)
+  assert.equal(tripStatuses(DEFAULT_RULES, [long]).get("long")?.excessDays, 10);
+  const result = simulateTrip(schengen, [long], trip("new", "schengen", "2027-01-01", "2027-01-10"));
+  assert.equal(result.firstOverDate, undefined);
+  assert.equal(result.affectedTrips.length, 0);
+  // 2027-06-29: 10 dias da nova + 81 da viagem = 91 (sem a nova, 81). Cada dia soma no máximo 1 dia acima do limite.
+  assert.deepEqual(result.worsenedTrips.map((item) => [item.trip.id, item.firstOverDate, item.excessDays]), [["long", "2027-06-29", 1]]);
+  assert.equal(result.safe, false);
+  const forecast = maxSafeStay(schengen, [long], "schengen", "2027-01-01");
+  assert.equal(forecast.limitedBy, "later-trip");
+  assert.equal(forecast.lastSafeDate, "2027-01-09");
+  assert.equal(forecast.firstOverDate, "2027-01-10");
+  assert.deepEqual([forecast.blockingTrip?.trip.id, forecast.blockingTrip?.firstOverDate, forecast.blockingTrip?.excessDays], ["long", "2027-06-29", 1]);
+  assert.equal(simulateTrip(schengen, [long], trip("c", "schengen", "2027-01-01", "2027-01-09")).safe, true);
+});
+
+test("simulateTrip: excessDays de viagem agravada é o máximo de dias acrescentados acima do limite", () => {
+  const long = trip("long", "schengen", "2027-05-01", addDays("2027-05-01", 159)); // 160 dias
+  const result = simulateTrip(schengen, [long], trip("new", "schengen", "2027-03-22", "2027-03-31"));
+  assert.equal(result.affectedTrips.length, 0);
+  // 2027-07-20: 81º dia da viagem + 10 da nova = 91. De 2027-07-29 em diante cada dia recebe os 10 dias da nova acima do limite.
+  assert.deepEqual(result.worsenedTrips.map((item) => [item.trip.id, item.firstOverDate, item.excessDays]), [["long", "2027-07-20", 10]]);
+  assert.equal(result.safe, false);
+});
+
+test("maxSafeStay: firstWarningDate é o primeiro dia da estadia em alerta", () => {
+  const forecast = maxSafeStay(schengen, [], "schengen", "2027-01-01");
+  assert.equal(forecast.firstWarningDate, addDays("2027-01-01", 74)); // 75º dia = warningAt
+  const short = maxSafeStay(schengen, [trip("later", "schengen", "2027-03-01", "2027-05-29")], "schengen", "2026-11-01");
+  assert.equal(short.limitedBy, "later-trip");
+  assert.equal(short.firstWarningDate, undefined);
+  const existing = trip("existing", "schengen", "2026-06-21", "2026-09-03"); // 75 dias
+  assert.equal(maxSafeStay(schengen, [existing], "schengen", "2026-09-04").firstWarningDate, "2026-09-04");
+});
+
+test("isoToday usa a data local, não a UTC", () => {
+  assert.equal(isoToday(new Date(2026, 8, 26, 23, 30)), "2026-09-26");
+  assert.equal(isoToday(new Date(2026, 8, 27, 0, 30)), "2026-09-27");
+  assert.equal(isoToday(new Date(2027, 0, 1, 1, 30)), "2027-01-01");
+  assert.match(isoToday(), /^\d{4}-\d{2}-\d{2}$/);
+});
+
+test("tripStatuses: ok, warning, over e none", () => {
+  const rules = DEFAULT_RULES;
+  const trips = [
+    trip("ok", "schengen", "2026-01-01", "2026-01-10"),
+    trip("exact", "schengen", "2027-01-01", addDays("2027-01-01", 89)), // exatamente 90: alerta, não excesso
+    trip("over", "schengen", "2028-01-01", addDays("2028-01-01", 91)), // 92 dias
+    { ...trip("other", "other", "2026-03-01", "2026-03-05"), country: "Japan" },
+    trip("inverted", "brazil", "2026-05-10", "2026-05-01"),
+  ];
+  const statuses = tripStatuses(rules, trips);
+  assert.equal(statuses.size, 5);
+  assert.deepEqual(statuses.get("ok"), { tripId: "ok", status: "ok", maxUsed: 10, excessDays: 0, firstOverDate: undefined, firstWarningDate: undefined });
+  const exact = statuses.get("exact");
+  assert.equal(exact?.status, "warning");
+  assert.equal(exact?.maxUsed, 90);
+  assert.equal(exact?.excessDays, 0);
+  assert.equal(exact?.firstOverDate, undefined);
+  assert.equal(exact?.firstWarningDate, addDays("2027-01-01", 74));
+  const over = statuses.get("over");
+  assert.equal(over?.status, "over");
+  assert.equal(over?.maxUsed, 92);
+  assert.equal(over?.excessDays, 2);
+  assert.equal(over?.firstOverDate, addDays("2028-01-01", 90));
+  assert.deepEqual(statuses.get("other"), { tripId: "other", status: "none", maxUsed: 0, excessDays: 0 });
+  assert.equal(statuses.get("inverted")?.status, "none");
+  assert.equal(tripStatuses([], [trips[0]]).get("ok")?.status, "none");
+});
+
+test("tripStatuses: conta viagens anteriores e não duplica sobreposições", () => {
+  const first = trip("first", "schengen", "2027-01-01", "2027-02-14"); // 45 dias
+  const overlap = trip("overlap", "schengen", "2027-02-01", "2027-03-02"); // sobrepõe 14 dias, 16 novos
+  const later = trip("later", "schengen", "2027-03-10", "2027-04-08"); // 30 dias
+  const statuses = tripStatuses(DEFAULT_RULES, [first, overlap, later]);
+  assert.equal(statuses.get("first")?.maxUsed, 45);
+  assert.equal(statuses.get("overlap")?.maxUsed, 61);
+  assert.equal(statuses.get("later")?.maxUsed, 91);
+  assert.equal(statuses.get("later")?.status, "over");
+  assert.equal(statuses.get("later")?.firstOverDate, "2027-04-08");
+  assert.equal(statuses.get("overlap")?.status, "ok");
+  assert.equal(tripStatuses(DEFAULT_RULES, [first, overlap, { ...later, end: "2027-04-07" }]).get("later")?.status, "warning");
+});
+
+test("tripStatuses: 100 viagens em poucos milissegundos, igual à contagem dia a dia", () => {
+  const random = seededRandom(7);
+  const trips: Trip[] = Array.from({ length: 100 }, (_, index) => {
+    const start = addDays("2020-01-01", Math.floor(random() * 3000));
+    return trip("p" + index, random() < 0.5 ? "schengen" : "brazil", start, addDays(start, Math.floor(random() * 30)));
+  });
+  const began = performance.now();
+  const statuses = tripStatuses(DEFAULT_RULES, trips);
+  const elapsed = performance.now() - began;
+  assert(elapsed < 200, "tripStatuses took " + elapsed.toFixed(1) + " ms");
+  for (const saved of trips.slice(0, 10)) {
+    const rule = saved.region === "brazil" ? brazil : schengen;
+    let maxUsed = 0;
+    for (let day = saved.start; day <= saved.end; day = addDays(day, 1)) maxUsed = Math.max(maxUsed, statusFor(rule, trips, day).used);
+    assert.equal(statuses.get(saved.id)?.maxUsed, maxUsed, saved.id);
+  }
+});
+
+test("simulateTrip: outra região não afeta a regra", () => {
+  const result = simulateTrip(schengen, [trip("later", "schengen", "2027-03-01", "2027-05-30")], trip("br", "brazil", "2027-01-01", "2027-02-27"));
+  assert.equal(result.maxUsed, 0);
+  assert.equal(result.affectedTrips.length, 0);
+});
+
+test("maxSafeStay: para antes de empurrar uma viagem futura acima do limite", () => {
+  const later = trip("later", "schengen", "2027-03-01", "2027-03-30");
+  const forecast = maxSafeStay(schengen, [later], "schengen", "2026-12-28");
+  assert.equal(forecast.limitedBy, "later-trip");
+  assert.equal(forecast.lastSafeDate, "2027-02-25"); // 60 dias + 30 em março = 90
+  assert.equal(forecast.daysAvailable, 60);
+  assert.equal(forecast.firstOverDate, "2027-02-26");
+  assert.equal(forecast.blockingTrip?.trip.id, "later");
+  assert.equal(simulateTrip(schengen, [later], trip("check", "schengen", "2026-12-28", "2027-02-25")).safe, true);
+  assert.equal(simulateTrip(schengen, [later], trip("check", "schengen", "2026-12-28", "2027-02-26")).safe, false);
+});
+
+test("maxSafeStay: sem viagens futuras o limite é a própria regra", () => {
+  const forecast = maxSafeStay(schengen, [], "schengen", "2027-01-01");
+  assert.equal(forecast.limitedBy, "limit");
+  assert.equal(forecast.firstOverDate, addDays("2027-01-01", 90));
+});
+
+test("earliestEntryFor: primeira entrada que comporta a estadia inteira", () => {
+  const full = trip("full", "schengen", "2026-07-01", "2026-09-28"); // 90 dias
+  const result = earliestEntryFor(schengen, [full], 30, "2026-10-01");
+  assert(result);
+  assert.equal(simulateTrip(schengen, [full], { region: "schengen", ...result }).safe, true);
+  assert.equal(simulateTrip(schengen, [full], { region: "schengen", start: addDays(result.start, -1), end: addDays(result.end, -1) }).safe, false);
+  assert.equal(inclusiveDays(result.start, result.end), 30);
+});
+
+test("earliestEntryFor: pula datas em outra região e recusa estadias acima do limite", () => {
+  const brazil1 = trip("br", "brazil", "2027-01-01", "2027-01-31");
+  assert.equal(earliestEntryFor(schengen, [brazil1], 10, "2027-01-01")?.start, "2027-02-01");
+  assert.equal(earliestEntryFor(schengen, [], 91, "2027-01-01"), null);
+  assert.equal(earliestEntryFor(schengen, [], 0, "2027-01-01"), null);
+});
+
+// Regression (browser QA): days already booked in the same region add no new days, but they are not a new stay.
+test("earliestEntryFor: nunca sugere datas sobrepostas a uma viagem salva", () => {
+  const portugal = trip("pt", "schengen", "2027-09-01", "2027-12-10"); // 101 dias
+  const result = earliestEntryFor(schengen, [portugal], 30, "2027-06-01");
+  assert(result);
+  assert.equal(inclusiveDays(result.start, result.end), 30);
+  assert.equal(result.end < portugal.start || result.start > portugal.end, true, `sugestão ${result.start}..${result.end}`);
+  assert.deepEqual(findConflicts([portugal], { region: "schengen", ...result }), { otherRegion: [], sameRegion: [] });
+  assert.equal(simulateTrip(schengen, [portugal], { region: "schengen", ...result }).safe, true);
+});
+
+// Regression (L2): keys are parsed at 12:00Z, so they must be formatted in UTC or UTC+12..+14 shows the next day.
+test("formatDate mostra o mesmo dia em qualquer fuso horário", () => {
+  assert.equal(formatDate("2026-03-28", { day: "numeric" }), "28");
+  assert.equal(formatDate("2026-12-31", { year: "numeric" }), "2026");
+  assert.match(formatDate("2026-03-28"), /^28 /);
+  assert.match(formatFullDate("2026-12-31"), /^31 de dezembro de 2026$/);
+  assert.equal(formatDate("2026-03-28", { day: "numeric", timeZone: "Pacific/Kiritimati" }), "28");
+});
+
+test("currentTrip e upcomingTrips ordenam corretamente", () => {
+  const trips = [trip("c", "brazil", "2027-05-01", "2027-05-10"), trip("now", "brazil", "2026-09-01", "2026-09-30"), trip("b", "schengen", "2026-11-01", "2026-11-10")];
+  assert.equal(currentTrip(trips, "2026-09-15")?.id, "now");
+  assert.deepEqual(upcomingTrips(trips, "2026-09-15").map((item) => item.id), ["b", "c"]);
+  assert.equal(currentTrip(trips, "2026-10-15"), undefined);
+});
+
+// Reference implementation: the original day-by-day algorithm, kept to prove the fast engine returns identical results.
+function referenceAnalyze(rule: Rule, trips: Trip[], region: Trip["region"], start: string, end: string) {
+  let maxUsed = 0; let maxUsedDate = start; let firstWarningDate: string | undefined; let firstOverDate: string | undefined;
+  if (start > end) return { safe: true, maxUsed: 0, maxUsedDate: start, firstWarningDate, firstOverDate, lastSafeDate: undefined };
+  for (let day = start; day <= end; day = addDays(day, 1)) {
+    const status = statusFor(rule, [...trips, { id: "ref", region, country: "", start, end: day }], day);
+    if (status.used > maxUsed) { maxUsed = status.used; maxUsedDate = day; }
+    if (status.status === "warning" && !firstWarningDate) firstWarningDate = day;
+    if (status.status === "over" && !firstOverDate) firstOverDate = day;
+  }
+  return { safe: !firstOverDate, firstWarningDate, firstOverDate, lastSafeDate: firstOverDate ? addDays(firstOverDate, -1) : undefined, maxUsed, maxUsedDate };
+}
+
+function seededRandom(seed: number) { return () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; }; }
+
+// Reference for saved trips the candidate reaches, straight from the definition: occupancy per day number, window sums.
+// A day of a saved trip after the candidate's exit (and within its window's reach) is impacted when it is over the
+// limit with the candidate and the candidate adds to it. "Already over" is judged on every day of the saved trip.
+function referenceLaterImpacts(rule: Rule, trips: Trip[], start: string, end: string) {
+  const dayNumber = (value: string) => Math.round(parseDate(value).getTime() / 86400000);
+  const occupancy = (list: Trip[]) => {
+    const days = new Set<number>();
+    for (const item of list) if (item.region === rule.region && item.start <= item.end) for (let day = dayNumber(item.start); day <= dayNumber(item.end); day++) days.add(day);
+    return days;
+  };
+  const without = occupancy(trips);
+  const withNew = occupancy([...trips, trip("new", rule.region, start, end)]);
+  const usedOn = (days: Set<number>, day: number) => { let count = 0; for (let back = 0; back < rule.windowDays; back++) if (days.has(day - back)) count++; return count; };
+  const exit = dayNumber(end);
+  const reach = exit + rule.windowDays - 1;
+  const affected = new Map<string, [string, number]>();
+  const worsened = new Map<string, [string, number]>();
+  let overOnlyOutOfReach = 0; // worsened trips that are within the limit on every day the candidate reaches
+  for (const saved of trips) {
+    if (saved.region !== rule.region || saved.start > saved.end) continue;
+    const first = dayNumber(saved.start);
+    const last = dayNumber(saved.end);
+    if (last <= exit || first > reach) continue;
+    let alreadyOver = false;
+    for (let day = first; day <= last && !alreadyOver; day++) alreadyOver = usedOn(without, day) > rule.limit;
+    let firstImpacted: string | undefined;
+    let excess = 0;
+    let overInReach = false;
+    for (let day = Math.max(first, exit + 1); day <= Math.min(last, reach); day++) {
+      const usedWith = usedOn(withNew, day);
+      const usedWithout = usedOn(without, day);
+      overInReach ||= usedWithout > rule.limit;
+      if (usedWith <= rule.limit || usedWith <= usedWithout) continue;
+      firstImpacted ??= addDays(end, day - exit);
+      excess = Math.max(excess, alreadyOver ? usedWith - Math.max(usedWithout, rule.limit) : usedWith - rule.limit);
+    }
+    if (firstImpacted) (alreadyOver ? worsened : affected).set(saved.id, [firstImpacted, excess]);
+    if (firstImpacted && alreadyOver && !overInReach) overOnlyOutOfReach++;
+  }
+  return { affected, worsened, overOnlyOutOfReach };
+}
+
+test("motor rápido: equivalente ao algoritmo original em 300 cenários aleatórios", () => {
+  const random = seededRandom(42);
+  const pick = (max: number) => Math.floor(random() * max);
+  let affectedRuns = 0;
+  let worsenedRuns = 0;
+  let overOnlyOutOfReach = 0;
+  for (let run = 0; run < 300; run++) {
+    const rule = run % 3 === 0 ? schengen : run % 3 === 1 ? { ...brazil, limit: 60 + pick(120), warningAt: 40 } : { ...schengen, limit: 30 + pick(150), windowDays: 90 + pick(400), warningAt: 20 };
+    // Long saved trips (up to 160 days) make trips that are over on days the candidate's window never reaches.
+    const trips: Trip[] = Array.from({ length: pick(8) }, (_, index) => {
+      const start = addDays("2026-01-01", pick(700));
+      return trip("t" + index, random() < 0.8 ? rule.region : "other", start, addDays(start, random() < 0.4 ? pick(160) : pick(40)));
+    });
+    const start = addDays("2026-06-01", pick(400));
+    const end = addDays(start, pick(120));
+    const fast = analyzeTrip(rule, trips, rule.region, start, end);
+    assert.deepEqual(fast, referenceAnalyze(rule, trips, rule.region, start, end), "analyzeTrip run " + run);
+
+    const simulation = simulateTrip(rule, trips, { region: rule.region, start, end });
+    const expected = referenceLaterImpacts(rule, trips, start, end);
+    const toMap = (items: typeof simulation.affectedTrips) => new Map(items.map((item): [string, [string, number]] => [item.trip.id, [item.firstOverDate, item.excessDays]]));
+    assert.deepEqual(toMap(simulation.affectedTrips), expected.affected, "affected trips run " + run);
+    assert.deepEqual(toMap(simulation.worsenedTrips), expected.worsened, "worsened trips run " + run);
+    assert.equal(simulation.safe, !simulation.firstOverDate && expected.affected.size === 0 && expected.worsened.size === 0, "safe run " + run);
+    if (expected.affected.size) affectedRuns++;
+    if (expected.worsened.size) worsenedRuns++;
+    overOnlyOutOfReach += expected.overOnlyOutOfReach;
+
+    const forecast = maxSafeStay(rule, trips, rule.region, start);
+    if (forecast.lastSafeDate) assert.equal(simulateTrip(rule, trips, { region: rule.region, start, end: forecast.lastSafeDate }).safe, true, "last safe date is safe, run " + run);
+    if (forecast.firstOverDate) assert.equal(simulateTrip(rule, trips, { region: rule.region, start, end: forecast.firstOverDate }).safe, false, "first over date is unsafe, run " + run);
+    if (forecast.blockingTrip) {
+      const blocked = simulateTrip(rule, trips, { region: rule.region, start, end: forecast.firstOverDate! });
+      assert.deepEqual([...blocked.affectedTrips, ...blocked.worsenedTrips].find((item) => item.trip.id === forecast.blockingTrip!.trip.id), forecast.blockingTrip, "blocking trip matches simulateTrip, run " + run);
+    }
+  }
+  assert(affectedRuns >= 10 && worsenedRuns >= 10 && overOnlyOutOfReach >= 1, `scenarios cover both lists (affected ${affectedRuns}, worsened ${worsenedRuns}, over only out of reach ${overOnlyOutOfReach})`);
 });

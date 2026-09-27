@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "tsx --test src/lib/rules.test.ts"
+    "test": "tsx --test src/lib/rules.test.ts src/lib/sync.test.ts"
   },
   "dependencies": {
     "@upstash/redis": "^1.38.4",

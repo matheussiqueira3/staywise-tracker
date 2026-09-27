@@ -53,8 +53,8 @@ type Trip = {
 
 type Rule = {
   region: “BR” | “SCHENGEN”;
-  windowDays: number;      // 180 or 90
-  rollingWindow: number;   // 365 or 365
+  limit: number;           // Brazil 180, Schengen 90 days
+  windowDays: number;      // rolling window: Brazil 360, Schengen 180 days
 };
 
 type Status = {
