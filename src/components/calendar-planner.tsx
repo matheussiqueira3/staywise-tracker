@@ -27,6 +27,8 @@ function monthKey(value: string) { return value.slice(0, 7) + "-01"; }
 function shiftMonth(value: string, amount: number) { const date = new Date(value + "T12:00:00Z"); date.setUTCDate(1); date.setUTCMonth(date.getUTCMonth() + amount); return date.toISOString().slice(0, 10); }
 function monthsBetween(start: string, end: string) { const months: string[] = []; for (let month = monthKey(start); month <= monthKey(end); month = shiftMonth(month, 1)) months.push(month); return months; }
 function shortDate(value: string) { return formatDate(value, { day: "2-digit", month: "short" }); }
+/** Start of a counting window: with the year when it is not the year of the day it ends on. */
+function windowStartDate(start: string, end: string) { return start.slice(0, 4) === end.slice(0, 4) ? shortDate(start) : longDate(start); }
 function longDate(value: string) { return formatDate(value, { day: "2-digit", month: "short", year: "numeric" }); }
 function plural(count: number, one: string, many: string) { return count + " " + (count === 1 ? one : many); }
 /** Default country typed for a rule: built-in regions keep their usual country, custom rules use their own name. */
@@ -47,7 +49,7 @@ export function TripStatusBadge({ status }: { status?: TripStatus }) {
 /** "91 dias entre 17 mai e 13 nov": the count on `date` with a planned stay, as shown to explain a limit. */
 function countFact(rule: Rule, trips: Trip[], stay: { start: string; end: string }, date: string): string {
   const count = statusWithStay(rule, trips, stay, date);
-  return plural(count.used, "dia", "dias") + " entre " + shortDate(count.windowStart) + " e " + shortDate(date) + " (máximo " + count.limit + ")";
+  return plural(count.used, "dia", "dias") + " entre " + windowStartDate(count.windowStart, date) + " e " + shortDate(date) + " (máximo " + count.limit + ")";
 }
 
 /** Plain-language explanation of how a rule counts, with today's numbers and when the counted days stop counting. */
@@ -90,7 +92,7 @@ function BudgetCard({ rule, trips, today, active }: { rule: Rule; trips: Trip[];
     <div className="status-header">{rule.label} · últimos {rule.windowDays} dias</div>
     <div className="status-numbers"><strong>{status.used}<small> / {status.limit}</small></strong></div>
     <div className="status-label">{left(status.remaining, status.status === "over")} hoje</div>
-    <div className="status-next">Conta de {shortDate(status.windowStart)} até hoje</div>
+    <div className="status-next">Conta de {windowStartDate(status.windowStart, today)} até hoje</div>
   </div>;
 }
 
@@ -365,7 +367,7 @@ export function CalendarPlanner({ trips, rules, today, initialRuleId, tripStatus
         <span className="planner-label">A conta de {rule.label} · toque em qualquer dia</span>
         {inspection && inspectDate ? <>
           <strong>{longDate(inspectDate)}: {plural(inspection.used, "dia", "dias")} de {inspection.limit}</strong>
-          <small className={"footer-verdict " + (inspection.status === "over" ? "danger" : inspection.status === "warning" ? "warning" : "safe")}>{isCalendarYear(rule) ? "Contados de 1º de janeiro" : "Contados nos " + rule.windowDays + " dias de " + shortDate(inspection.windowStart)} até {shortDate(inspectDate)} (sublinhados no calendário){inspection.status === "over" ? " · acima do limite" : " · restam " + inspection.remaining}</small>
+          <small className={"footer-verdict " + (inspection.status === "over" ? "danger" : inspection.status === "warning" ? "warning" : "safe")}>{isCalendarYear(rule) ? "Contados de 1º de janeiro" : "Contados nos " + rule.windowDays + " dias de " + windowStartDate(inspection.windowStart, inspectDate)} até {shortDate(inspectDate)} (sublinhados no calendário){inspection.status === "over" ? " · acima do limite" : " · restam " + inspection.remaining}</small>
         </> : <strong>Toque em um dia</strong>}
       </div>
       <div className="footer-actions"><button className="button secondary" onClick={() => { setInspecting(false); setInspectDate(null); }}>Voltar a planejar</button></div>

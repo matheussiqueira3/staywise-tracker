@@ -74,9 +74,19 @@ function FitsFrom({ leg, previous, onStayLonger, onInsertStop }: { leg: LegPlan;
   </div>;
 }
 
+/** Number of days: the field can be cleared and retyped; only whole numbers from 1 change the plan. */
+function DaysInput({ value, label, onChange }: { value: number; label: string; onChange: (days: number) => void }) {
+  const [draft, setDraft] = useState<string | null>(null);
+  return <input type="number" inputMode="numeric" min="1" value={draft ?? String(value)} aria-label={label} onBlur={() => setDraft(null)} onChange={(event) => {
+    setDraft(event.target.value);
+    const days = Number(event.target.value);
+    if (Number.isInteger(days) && days >= 1) onChange(days);
+  }} />;
+}
+
 function Verdict({ leg }: { leg: LegPlan }) {
   const max = leg.maxDays !== null ? plural(leg.maxDays, "dia", "dias") : "";
-  if (leg.status === "conflict" && leg.conflict) return <p className="leg-verdict danger" role="status">Conflito com {displayCountry(leg.conflict.country)} ({shortDate(leg.conflict.start)} — {shortDate(leg.conflict.end)}). Mude a data de saída ou os dias anteriores.</p>;
+  if (leg.status === "conflict" && leg.conflict) return <p className="leg-verdict danger" role="status">Conflito com {displayCountry(leg.conflict.country)} ({shortDate(leg.conflict.start)} — {shortDate(leg.conflict.end)}), já salva. Mude a data de início ou os dias dos destinos anteriores.</p>;
   if (leg.status === "none") return <p className="leg-verdict neutral" role="status">Sem limite de dias para {displayCountry(leg.country) || "este lugar"}. O período só evita sobreposição.</p>;
   if (!leg.rule || !leg.simulation) return null;
   if (leg.maxDays === 0) return <p className="leg-verdict danger" role="status">Sem dias disponíveis em {leg.rule.label} a partir de {longDate(leg.start)}{leg.fitsFrom ? "" : ". Chegue mais tarde ou fique menos antes"}.</p>;
@@ -85,7 +95,7 @@ function Verdict({ leg }: { leg: LegPlan }) {
     const later = leg.simulation.affectedTrips[0] ?? leg.simulation.worsenedTrips[0];
     return <p className="leg-verdict danger" role="status">Faz a viagem de {later ? shortDate(later.trip.start) + " (" + displayCountry(later.trip.country) + ")" : "depois"} passar do limite. O máximo aqui é {max}.</p>;
   }
-  return <p className={"leg-verdict " + (leg.status === "warning" ? "warning" : "safe")} role="status">✓ Dentro do limite · pico de {usageLabel(leg.rule, leg.simulation.maxUsed, leg.simulation.maxUsedDate)}.</p>;
+  return <p className={"leg-verdict " + (leg.status === "warning" ? "warning" : "safe")} role="status">✓ Dentro do limite{leg.status === "warning" ? ", perto do máximo" : ""} · pico de {usageLabel(leg.rule, leg.simulation.maxUsed, leg.simulation.maxUsedDate)}.</p>;
 }
 
 /**
@@ -118,7 +128,10 @@ export function ItineraryPlanner({ rules, trips, today, initial, onClose, onSave
     sheetRef.current?.querySelector<HTMLElement>("input, button")?.focus();
     const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") closeRef.current(); };
     window.addEventListener("keydown", onKey);
-    return () => { window.removeEventListener("keydown", onKey); previous?.focus(); };
+    // The page behind the sheet must not scroll while planning.
+    const overflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { window.removeEventListener("keydown", onKey); document.body.style.overflow = overflow; previous?.focus(); };
   }, []);
 
   function update(index: number, change: Partial<ItineraryLeg>) { setConfirming(false); setLegs((current) => current.map((leg, other) => other === index ? { ...leg, ...change } : leg)); }
@@ -182,7 +195,7 @@ export function ItineraryPlanner({ rules, trips, today, initial, onClose, onSave
             <div className="leg-dates"><strong>{shortDate(leg.start)} → {longDate(leg.end)}</strong></div>
             <div className="leg-stepper">
               <button className="circle-button" onClick={() => setDays(index, input.days - 1)} aria-label="Um dia a menos">−</button>
-              <label><input type="number" inputMode="numeric" min="1" value={input.days} onChange={(event) => setDays(index, Number(event.target.value))} aria-label={"Dias no destino " + (index + 1)} /><span>{input.days === 1 ? "dia" : "dias"}</span></label>
+              <label><DaysInput value={input.days} label={"Dias no destino " + (index + 1)} onChange={(days) => setDays(index, days)} /><span>{input.days === 1 ? "dia" : "dias"}</span></label>
               <button className="circle-button" onClick={() => setDays(index, input.days + 1)} aria-label="Um dia a mais">+</button>
             </div>
             <input className="leg-slider" type="range" min="1" max={sliderMax} value={Math.min(input.days, sliderMax)} onChange={(event) => setDays(index, Number(event.target.value))} aria-label={"Ajustar dias no destino " + (index + 1)} />
