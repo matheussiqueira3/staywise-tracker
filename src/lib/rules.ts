@@ -505,7 +505,28 @@ export type LegPlan = {
   status: LegStatus;
   /** When the leg does not fit: the first arrival date from which all its days fit (null when none within two years). */
   fitsFrom?: string | null;
+  /** What comes next: for each rule, the stay possible when arriving on this leg's last day (the travel day). */
+  next: Projection[];
 };
+
+/** Arriving under `rule` on a date: until when the stay can last, or when days come back if there are none. */
+export type Projection = { rule: Rule; lastSafeDate: string | null; days: number; returnsOn: string | null };
+
+/** The stay possible from `date` under `rule`, and, when none, the first later day with at least one day free. */
+export function projectArrival(rule: Rule, trips: Trip[], date: string): Projection {
+  const forecast = maxSafeStay(rule, trips, rule.region, date);
+  return { rule, lastSafeDate: forecast.lastSafeDate, days: forecast.daysAvailable, returnsOn: forecast.lastSafeDate ? null : earliestFit(rule, trips, 1, date) };
+}
+
+export type DayOverview = { date: string; stay?: Trip; stayRule?: Rule; rules: { rule: Rule; count: RuleStatus; projection: Projection }[] };
+/**
+ * Everything about one calendar day, for every rule: the count on that day (the window ending there) and the projection
+ * of a stay from that day (until when, or when days come back).
+ */
+export function dayOverview(rules: Rule[], trips: Trip[], date: string): DayOverview {
+  const stay = trips.filter((trip) => trip.start <= date && trip.end >= date).sort((a, b) => b.start.localeCompare(a.start))[0];
+  return { date, stay, stayRule: stay ? ruleForTrip(rules, stay) : undefined, rules: rules.map((rule) => ({ rule, count: statusFor(rule, trips, date), projection: projectArrival(rule, trips, date) })) };
+}
 
 /** Trip fields for a leg under `rule` (region "other" and no ruleId for a country without a limit). */
 function legTrip(rule: Rule | undefined, id: string, country: string, start: string, end: string): Trip {
@@ -532,12 +553,14 @@ export function planItinerary(rules: Rule[], trips: Trip[], start: string, legs:
   return laidOut.map((leg, index) => {
     const others = trips.concat(asTrips.filter((_, other) => other !== index));
     const conflict = findConflicts(others, asTrips[index]).otherRegion[0];
-    if (!leg.rule) return { ...leg, maxDays: null, lastSafeDate: null, simulation: null, conflict, status: conflict ? "conflict" : "none" };
+    const upToHere = trips.concat(asTrips.slice(0, index + 1));
+    const next = rules.map((rule) => projectArrival(rule, upToHere, leg.end));
+    if (!leg.rule) return { ...leg, maxDays: null, lastSafeDate: null, simulation: null, conflict, status: conflict ? "conflict" : "none", next };
     const forecast = maxSafeStay(leg.rule, trips.concat(asTrips.slice(0, index)), leg.rule.region, leg.start);
     const simulation = simulateTrip(leg.rule, trips.concat(asTrips.slice(0, index)), { ruleId: leg.rule.id, region: leg.rule.region, start: leg.start, end: leg.end });
     const status: LegStatus = conflict ? "conflict" : simulation.firstOverDate ? "over" : !simulation.safe ? "affects" : simulation.firstWarningDate ? "warning" : "safe";
     const fitsFrom = status === "over" || status === "affects" ? earliestFit(leg.rule, trips.concat(asTrips.slice(0, index)), leg.days, leg.start) : undefined;
-    return { ...leg, maxDays: forecast.daysAvailable, lastSafeDate: forecast.lastSafeDate, simulation, conflict, status, fitsFrom };
+    return { ...leg, maxDays: forecast.daysAvailable, lastSafeDate: forecast.lastSafeDate, simulation, conflict, status, fitsFrom, next };
   });
 }
 

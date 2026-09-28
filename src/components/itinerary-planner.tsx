@@ -7,7 +7,7 @@ import type { ItineraryLeg, LegPlan } from "@/lib/rules";
 import type { Rule, Trip } from "@/lib/types";
 
 /** `initial`: an itinerary loaded from saved trips (`tripIds`), which saving replaces; `trips` must not include them. */
-type Props = { rules: Rule[]; trips: Trip[]; today: string; initial?: { start: string; legs: ItineraryLeg[]; tripIds: string[] }; onClose: () => void; onSave: (trips: Trip[], replaces: string[]) => void };
+type Props = { rules: Rule[]; trips: Trip[]; today: string; initial?: { start: string; legs: ItineraryLeg[]; tripIds: string[] }; startAt?: { date: string; ruleId?: string }; onClose: () => void; onSave: (trips: Trip[], replaces: string[]) => void };
 const NO_RULE = "none";
 const DEFAULT_DAYS = 30;
 
@@ -56,7 +56,7 @@ function ItineraryCalendar({ rules, trips, plan, today }: { rules: Rule[]; trips
   }, [rules, trips, plan]);
   const months = monthsBetween(plan[0].start.slice(0, 8) + "01", plan[plan.length - 1].end);
   return <div className="itinerary-months annual-calendar">
-    {months.map((month) => <MonthCalendar key={month} month={month} today={today} dayStates={states} selectedRegion="other" selectedLabel="" tripLabel={(trip) => ruleForTrip(rules, trip)?.label ?? trip.country} conflictIds={new Set()} selectedStart={null} selectedEnd={null} onDay={() => undefined} />)}
+    {months.map((month) => <MonthCalendar key={month} month={month} today={today} dayStates={states} tripLabel={(trip) => ruleForTrip(rules, trip)?.label ?? displayCountry(trip.country)} />)}
   </div>;
 }
 
@@ -84,6 +84,13 @@ function DaysInput({ value, label, onChange }: { value: number; label: string; o
   }} />;
 }
 
+/** The projection for the next move: arriving elsewhere on this leg's last day (the travel day), how long each place allows. */
+function NextStep({ leg }: { leg: LegPlan }) {
+  const others = leg.next.filter((item) => item.rule.id !== leg.rule?.id);
+  if (others.length === 0) return null;
+  return <p className="leg-next"><span>Ao sair, em {shortDate(leg.end)}:</span> {others.map((item) => <strong key={item.rule.id} className={item.lastSafeDate ? "" : "none"}>{item.rule.label} {item.lastSafeDate ? plural(item.days, "dia", "dias") + " (até " + shortDate(item.lastSafeDate) + ")" : item.returnsOn ? "só a partir de " + shortDate(item.returnsOn) : "sem dias"}</strong>)}</p>;
+}
+
 function Verdict({ leg }: { leg: LegPlan }) {
   const max = leg.maxDays !== null ? plural(leg.maxDays, "dia", "dias") : "";
   if (leg.status === "conflict" && leg.conflict) return <p className="leg-verdict danger" role="status">Conflito com {displayCountry(leg.conflict.country)} ({shortDate(leg.conflict.start)} — {shortDate(leg.conflict.end)}), já salva. Mude a data de início ou os dias dos destinos anteriores.</p>;
@@ -102,13 +109,13 @@ function Verdict({ leg }: { leg: LegPlan }) {
  * Plan a trip as a sequence of destinations: each starts on the day the previous one ends and shows at once the longest
  * possible stay there. All numbers come from planItinerary.
  */
-export function ItineraryPlanner({ rules, trips, today, initial, onClose, onSave }: Props) {
+export function ItineraryPlanner({ rules, trips, today, initial, startAt, onClose, onSave }: Props) {
   // A new plan starts where the saved ones end, in the other place: on the travel day itself, which counts for both.
   const [defaults] = useState(() => {
     const last = trips.filter((trip) => trip.end >= today).sort((a, b) => b.end.localeCompare(a.end))[0];
     const lastRule = last ? ruleForTrip(rules, last) : undefined;
-    const first = rules.find((rule) => rule.id !== lastRule?.id) ?? rules[0];
-    const from = last ? last.end : today;
+    const first = (startAt?.ruleId ? rules.find((rule) => rule.id === startAt.ruleId) : undefined) ?? rules.find((rule) => rule.id !== lastRule?.id) ?? rules[0];
+    const from = startAt?.date ?? (last ? last.end : today);
     return { start: from, leg: nextLeg(rules, trips, from, [], first?.id) };
   });
   const [start, setStart] = useState(initial?.start ?? defaults.start);
@@ -202,6 +209,7 @@ export function ItineraryPlanner({ rules, trips, today, initial, onClose, onSave
             {leg.maxDays !== null && leg.maxDays > 0 && <div className="leg-max"><span>Máximo possível: <strong>{plural(leg.maxDays, "dia", "dias")}</strong> (até {shortDate(leg.lastSafeDate!)})</span>{input.days !== leg.maxDays && <button className="text-button" onClick={() => setDays(index, leg.maxDays!)}>Usar máximo</button>}</div>}
             <Verdict leg={leg} />
             <FitsFrom leg={leg} previous={plan[index - 1]} onStayLonger={(date) => stayLonger(index, date)} onInsertStop={(date) => insertStop(index, date)} />
+            <NextStep leg={leg} />
           </li>;
         })}
       </ol>

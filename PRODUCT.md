@@ -12,7 +12,11 @@
 4. Save: one trip per destination, undone together (an edited itinerary replaces the trips it was loaded from).
 5. The calendar scrolls to the new trips and shows them.
 
-The single-trip flow (country → tap entry day → last safe day → tap exit → save) stays on the calendar for quick checks.
+Roles are separate: **Planejar** creates and edits plans; the **Calendário** only shows; **Viagens** corrects a single saved trip.
+
+On the calendar, tapping any day opens its panel: for every country, the count on that day and the projection of a stay arriving that day ("pode ficar até 10 abr (131 dias)", or "sem dias livres · voltam em 30 jun"); the counting window of one country is underlined (tap a country to switch). From there: "Planejar a partir deste dia" (opens the planner on that day and country) or "Editar viagem".
+
+In the planner, each destination also projects the next move: "Ao sair, em 10 abr: Itália 90 dias (até 8 jul)".
 
 ## Design Principles
 
@@ -49,7 +53,7 @@ The workspace belongs to Andrew, a Brazilian and Italian citizen who is tax resi
 - **Itália** — 90 days in any rolling 180, the owner's day budget (decided 2026-09-28).
 - **Brasil** — 180 days in any rolling 360, the owner's day budget.
 - The engine also supports calendar-year rules (e.g. Italy's statutory 183 days per calendar year); none is in the catalog today.
-- The counting must be visible, on the calendar: every day of a stay shows its count (days in that country inside the window ending that day), amber near the limit and red above it; "Ver a conta de um dia" underlines the whole window behind a tapped day and gives its total; the itinerary planner draws the plan the same way before saving.
+- The counting must be visible, on the calendar: every day of a stay shows its count (days in that country inside the window ending that day), amber near the limit and red above it; a tapped day underlines its whole window and shows every country's count and projection; the itinerary planner draws the plan the same way before saving.
 - **Schengen** (90 in 180) stays in the catalog for other passports, off by default.
 
 Stored data carries a format `version`. Version 2 moved stays in Italy recorded under the old "schengen" region to the Italy rule.

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { CATALOG_RULES, DEFAULT_RULES, addDays, countedRuns, dailyCounts, displayCountry, itineraryFromTrips, itineraryTrips, planItinerary, describeRule, limitOn, statusWithStay, yearBudget, analyzeTrip, currentTrip, daysInWindow, earliestEntryFor, findConflicts, formatDate, formatFullDate, inclusiveDays, isBuiltInRule, isoToday, maxSafeStay, parseDate, parseRuleNumbers, ruleForTrip, simulateTrip, statusFor, tripMatchesRule, tripStatuses, upcomingTrips } from "./rules";
+import { CATALOG_RULES, DEFAULT_RULES, addDays, countedRuns, dailyCounts, dayOverview, displayCountry, itineraryFromTrips, itineraryTrips, planItinerary, describeRule, limitOn, statusWithStay, yearBudget, analyzeTrip, currentTrip, daysInWindow, earliestEntryFor, findConflicts, formatDate, formatFullDate, inclusiveDays, isBuiltInRule, isoToday, maxSafeStay, parseDate, parseRuleNumbers, ruleForTrip, simulateTrip, statusFor, tripMatchesRule, tripStatuses, upcomingTrips } from "./rules";
 import { STATE_VERSION, decodeState, encodeState, normalizeState } from "./share";
 import { seedState } from "@/data/seed";
 import type { Rule } from "./types";
@@ -1066,4 +1066,27 @@ test("itineraryFromTrips: o plano salvo à frente vira itinerário, mantendo as 
 
 test("displayCountry: nomes em português na interface", () => {
   assert.deepEqual(["Italy", "Brazil", " brazil ", "Bahamas", "Japão"].map(displayCountry), ["Itália", "Brasil", "Brasil", "Bahamas", "Japão"]);
+});
+
+test("dayOverview: conta e projeção de cada país num dia", () => {
+  const empty = dayOverview(DEFAULT_RULES, [], "2027-01-01");
+  assert.equal(empty.stay, undefined);
+  assert.deepEqual(empty.rules.map((item) => [item.rule.id, item.count.used, item.projection.days, item.projection.returnsOn]), [["brazil", 0, 180, null], ["italy", 0, 90, null]]);
+  const trips = [italyTrip("winter", "2027-01-01", "2027-03-31")]; // 90 dias
+  const inside = dayOverview(DEFAULT_RULES, trips, "2027-02-01");
+  assert.equal(inside.stay?.id, "winter");
+  assert.equal(inside.stayRule?.id, "italy");
+  // Em 10 abr a janela ainda tem os 90 dias de jan–mar: chegar à Itália não dá nenhum dia; eles voltam em 30 jun.
+  const after = dayOverview(DEFAULT_RULES, trips, "2027-04-10").rules.find((item) => item.rule.id === "italy")!;
+  assert.deepEqual([after.count.used, after.projection.lastSafeDate, after.projection.days, after.projection.returnsOn], [90, null, 0, "2027-06-30"]);
+  // No Brasil, nada conta: 180 dias.
+  assert.equal(dayOverview(DEFAULT_RULES, trips, "2027-04-10").rules.find((item) => item.rule.id === "brazil")!.projection.days, 180);
+});
+
+test("planItinerary: cada destino projeta o próximo passo em cada país", () => {
+  const plan = planItinerary(DEFAULT_RULES, [], "2027-01-01", [{ ruleId: "italy", country: "Italy", days: 90 }]);
+  const next = new Map(plan[0].next.map((item) => [item.rule.id, item]));
+  // Saindo da Itália em 31 mar (dia de viagem): Brasil com 180 dias; Itália só volta em 30 jun.
+  assert.deepEqual([next.get("brazil")!.days, next.get("brazil")!.lastSafeDate], [180, "2027-09-26"]);
+  assert.equal(next.get("italy")!.returnsOn ?? next.get("italy")!.lastSafeDate, "2027-03-31"); // continuar: só o próprio dia
 });

@@ -110,20 +110,28 @@
 .annual-day .day-count.warning{color:#9a5a10;opacity:1}.annual-day .day-count.over{color:var(--red);opacity:1}
 .year-month-grid .annual-day.count-over:not(.selected-start):not(.selected-end){background:#fde3df;color:#8d3332;border-color:#efc2bc}
 .selected-start .day-count,.selected-end .day-count{color:#fff!important}
-/* "Ver a conta": the window behind the inspected day is underlined; the day itself is outlined */
+/* Tapped day: the window behind it is underlined; the day itself is outlined */
 .year-month-grid .annual-day.in-window{box-shadow:inset 0 -3px 0 var(--teal)}
 .year-month-grid .annual-day.inspected{outline:2px solid var(--ink);outline-offset:1px;z-index:1}
-.count-legend{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 12px;color:var(--muted);font-size:11px;line-height:1.4}
-.count-toggle{flex:none;min-height:36px;font-size:12px}.count-toggle.active{background:var(--ink);color:#fff}
-.inspect-footer{border-color:var(--ink)}
 .itinerary-preview{border:1px solid var(--line);border-radius:13px;padding:11px 13px}
 .itinerary-preview summary{cursor:pointer;font-weight:800;font-size:14px;min-height:28px;display:flex;align-items:center}
 .itinerary-preview p{color:var(--muted);font-size:12px;margin:8px 0}
 .itinerary-months{grid-template-columns:1fr!important;gap:10px}
-@media(max-width:700px){.count-legend{flex-direction:column;align-items:stretch}.count-toggle{width:100%}}
 /* Planner: when a destination does not fit, when it would, and how to get there */
 .leg-fits{display:grid;gap:8px;font-size:12px;color:var(--ink);line-height:1.45}.leg-fits p{margin:0}
 .leg-fits-actions{display:flex;flex-wrap:wrap;gap:8px}.leg-fits-actions .button{flex:1;min-height:40px;font-size:12px}
 .itinerary-preview .how-it-works{margin:8px 0 0}
 .plan-edit{display:flex;margin:-6px 0 12px auto}
 .section-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+/* Day panel: the tapped day's count and projection for every country */
+.day-panel{gap:10px}
+.planner-footer .day-panel-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}.planner-footer .day-panel-head>div{display:grid;gap:2px}.day-panel-head strong{font-size:15px}
+.day-panel-head .circle-button{width:34px;height:34px;flex:none}
+.day-rules{display:grid;gap:6px}
+.day-rule{display:grid;grid-template-columns:auto 1fr;gap:1px 10px;text-align:left;border:1px solid var(--line);border-radius:10px;background:#fff;padding:8px 10px;font:inherit;color:var(--ink);cursor:pointer}
+.day-rule.active{border-color:var(--teal);box-shadow:inset 0 0 0 1px var(--teal)}
+.day-rule-name{grid-row:span 2;align-self:center;font-weight:800;font-size:13px;min-width:62px}
+.day-rule-count{font-size:11px;color:var(--muted)}.day-rule-answer{font-size:13px;font-weight:700;color:var(--teal-dark)}
+.day-rule.none .day-rule-answer{color:var(--red)}
+.day-window{color:var(--muted);font-size:11px;line-height:1.4}
+.leg-next{margin:0;font-size:12px;color:var(--muted);display:flex;flex-wrap:wrap;gap:4px 10px}.leg-next strong{color:var(--teal-dark)}.leg-next strong.none{color:var(--red)}
