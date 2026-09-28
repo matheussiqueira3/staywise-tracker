@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { CATALOG_RULES, DEFAULT_RULES, addDays, countedRuns, itineraryTrips, planItinerary, describeRule, limitOn, statusWithStay, yearBudget, analyzeTrip, currentTrip, daysInWindow, earliestEntryFor, findConflicts, formatDate, formatFullDate, inclusiveDays, isBuiltInRule, isoToday, maxSafeStay, parseDate, parseRuleNumbers, ruleForTrip, simulateTrip, statusFor, tripMatchesRule, tripStatuses, upcomingTrips } from "./rules";
+import { CATALOG_RULES, DEFAULT_RULES, addDays, countedRuns, dailyCounts, itineraryTrips, planItinerary, describeRule, limitOn, statusWithStay, yearBudget, analyzeTrip, currentTrip, daysInWindow, earliestEntryFor, findConflicts, formatDate, formatFullDate, inclusiveDays, isBuiltInRule, isoToday, maxSafeStay, parseDate, parseRuleNumbers, ruleForTrip, simulateTrip, statusFor, tripMatchesRule, tripStatuses, upcomingTrips } from "./rules";
 import { STATE_VERSION, decodeState, encodeState, normalizeState } from "./share";
 import { seedState } from "@/data/seed";
 import type { Rule } from "./types";
@@ -1016,4 +1016,21 @@ test("itineraryTrips: o itinerário salvo tem as mesmas datas e o mesmo veredito
     ["plan-2", "brazil", "brazil", "Brasil", "2027-02-03", "2027-02-22"],
   ]);
   assert.deepEqual(saved.map((item) => tripStatuses(DEFAULT_RULES, saved).get(item.id)?.status), ["ok", "none", "ok"]);
+});
+
+test("dailyCounts: a contagem de cada dia é a mesma de statusFor", () => {
+  const random = seededRandom(7);
+  const pick = (max: number) => Math.floor(random() * max);
+  for (const rule of [italy, brazil, italyCalendar]) {
+    const trips: Trip[] = Array.from({ length: 6 }, (_, index) => {
+      const start = addDays("2026-01-01", pick(500));
+      return { ...trip("t" + index, rule.region, start, addDays(start, pick(60))), ruleId: rule.id };
+    });
+    const counts = dailyCounts(rule, trips, "2026-03-01", "2027-06-30");
+    assert.equal(counts.size, inclusiveDays("2026-03-01", "2027-06-30"));
+    for (let day = "2026-03-01"; day <= "2027-06-30"; day = addDays(day, 7)) {
+      const status = statusFor(rule, trips, day);
+      assert.deepEqual(counts.get(day), { used: status.used, limit: status.limit }, rule.id + " " + day);
+    }
+  }
 });

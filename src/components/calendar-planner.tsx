@@ -1,14 +1,18 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { addDays, earliestEntryFor, findConflicts, formatDate, inclusiveDays, countedRuns, isCalendarYear, limitOn, limitPhrase, maxSafeStay, maxStayLength, ruleForTrip, simulateTrip, statusFor, statusWithStay, usageLabel, yearBudget } from "@/lib/rules";
+import { addDays, earliestEntryFor, findConflicts, formatDate, inclusiveDays, countedRuns, dailyCounts, isCalendarYear, limitOn, limitPhrase, maxSafeStay, maxStayLength, ruleForTrip, simulateTrip, statusFor, statusWithStay, usageLabel, yearBudget } from "@/lib/rules";
 import type { AffectedTrip, MaxSafeStay, TripSimulation, TripStatus } from "@/lib/rules";
 import type { Region, Rule, Trip } from "@/lib/types";
 
 /** `focus`: a date to bring into view (a new object each time, e.g. after saving an itinerary). */
 type CalendarPlannerProps = { trips: Trip[]; rules: Rule[]; today: string; initialRuleId: string; tripStatus: Map<string, TripStatus>; focus?: { date: string }; onOpen: (trip: Trip) => void; onSave: (trip: Trip) => boolean; onPlan: () => void };
 /** `tripOver`: the day belongs to a saved trip that is over the limit on/after its first over day. */
-type DayState = { trip?: Trip; tripOver?: boolean; forecast?: "safe" | "warning" | "last" | "over" | "blocked" };
+/**
+ * What a calendar day shows. `count`: days in the counting window ending that day, under the rule of the stay on it.
+ * `inWindow` / `inspected`: the window behind an inspected day ("Ver a conta").
+ */
+export type DayState = { trip?: Trip; tripOver?: boolean; forecast?: "safe" | "warning" | "last" | "over" | "blocked"; count?: { used: number; limit: number; warningAt: number }; inWindow?: boolean; inspected?: boolean };
 type DayChoice = { date: string; trip: Trip };
 const WEEKDAYS = ["seg", "ter", "qua", "qui", "sex", "sáb", "dom"];
 /** Picker value for a rule-less trip: recorded only to block overlapping dates, never counted toward a limit. */
@@ -206,6 +210,9 @@ export function CalendarPlanner({ trips, rules, today, initialRuleId, tripStatus
   const [lastMonth, setLastMonth] = useState(shiftMonth(monthKey(today), 17));
   const [scrollTarget, setScrollTarget] = useState<string | null>(null);
   const [choice, setChoice] = useState<DayChoice | null>(null);
+  // "Ver a conta": taps inspect a day (its counting window and total) instead of selecting dates.
+  const [inspecting, setInspecting] = useState(false);
+  const [inspectDate, setInspectDate] = useState<string | null>(null);
   // Candidate the user already confirmed once despite the warning; any selection change clears it, and it only
   // counts for the saved trips and rules it was given against, so a change there (e.g. after "Editar viagem") re-asks.
   const [confirmed, setConfirmed] = useState<{ key: string; trips: Trip[]; rules: Rule[] } | null>(null);
@@ -242,16 +249,26 @@ export function CalendarPlanner({ trips, rules, today, initialRuleId, tripStatus
     : null;
   const adjustTo = !conflict && candidate && simulation && !simulation.safe && lastSafe && lastSafe >= candidate.start && lastSafe < candidate.end ? lastSafe : null;
 
+  // Saved trips plus the current selection, so the counts on the calendar already include the plan being drawn.
+  const countedTrips = useMemo(() => candidate && rule ? trips.concat({ id: "selection", ...ruleFields(rule), country, start: candidate.start, end: candidate.end }) : trips, [trips, rule, country, candidate?.start, candidate?.end]); // eslint-disable-line react-hooks/exhaustive-deps
+  const inspection = inspecting && inspectDate && rule ? statusFor(rule, countedTrips, inspectDate) : null;
   const dayStates = useMemo(() => {
     const states = new Map<string, DayState>();
     const rangeStart = firstMonth;
     const rangeEnd = addDays(shiftMonth(lastMonth, 1), -1);
+    const counts = new Map(rules.map((item) => [item.id, dailyCounts(item, countedTrips, rangeStart, rangeEnd)]));
+    const countFor = (stayRule: Rule | undefined, date: string) => {
+      const count = stayRule && counts.get(stayRule.id)?.get(date);
+      return count && stayRule ? { ...count, warningAt: stayRule.warningAt } : undefined;
+    };
     for (const trip of trips) {
       if (trip.end < rangeStart || trip.start > rangeEnd) continue;
       const status = tripStatus.get(trip.id);
       const overFrom = status?.status === "over" ? status.firstOverDate : undefined;
-      for (let date = trip.start > rangeStart ? trip.start : rangeStart; date <= trip.end && date <= rangeEnd; date = addDays(date, 1)) if (!states.has(date)) states.set(date, { trip, tripOver: Boolean(overFrom && date >= overFrom) });
+      const tripRule = ruleForTrip(rules, trip);
+      for (let date = trip.start > rangeStart ? trip.start : rangeStart; date <= trip.end && date <= rangeEnd; date = addDays(date, 1)) if (!states.has(date)) states.set(date, { trip, tripOver: Boolean(overFrom && date >= overFrom), count: countFor(tripRule, date) });
     }
+    if (candidate && rule) for (let date = candidate.start; date <= candidate.end && date <= rangeEnd; date = addDays(date, 1)) if (date >= rangeStart) states.set(date, { ...states.get(date), count: countFor(rule, date) });
     if (forecast) {
       const mark = (date: string, value: DayState["forecast"]) => states.set(date, { ...states.get(date), forecast: value });
       const warningFrom = forecast.firstWarningDate;
@@ -260,8 +277,12 @@ export function CalendarPlanner({ trips, rules, today, initialRuleId, tripStatus
       const beyond = forecast.limitedBy === "later-trip" ? "blocked" : "over";
       if (forecast.firstOverDate) for (let offset = 0; offset < OVER_PREVIEW_DAYS; offset++) mark(addDays(forecast.firstOverDate, offset), beyond);
     }
+    if (inspection && inspectDate) {
+      for (let date = inspection.windowStart > rangeStart ? inspection.windowStart : rangeStart; date <= inspectDate && date <= rangeEnd; date = addDays(date, 1)) states.set(date, { ...states.get(date), inWindow: true });
+      states.set(inspectDate, { ...states.get(inspectDate), inspected: true });
+    }
     return states;
-  }, [trips, tripStatus, forecast, firstMonth, lastMonth]);
+  }, [trips, rules, rule, candidate?.start, candidate?.end, countedTrips, tripStatus, forecast, firstMonth, lastMonth, inspection?.windowStart, inspectDate]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!scrollTarget) return;
@@ -277,10 +298,18 @@ export function CalendarPlanner({ trips, rules, today, initialRuleId, tripStatus
     setEnd(date);
   }
   function onDay(date: string, trip?: Trip) {
+    if (inspecting) { inspect(date); return; }
     // While picking an exit, every day is selectable; otherwise a day with a saved trip asks what to do.
     if (start && !end) chooseDay(date);
     else if (trip) setChoice({ date, trip });
     else chooseDay(date);
+  }
+  // Shows the day's whole counting window: months before the first one shown are added above.
+  function inspect(date: string) {
+    setInspectDate(date);
+    if (!rule) return;
+    const windowMonth = monthKey(statusFor(rule, countedTrips, date).windowStart);
+    if (windowMonth < firstMonth) setFirstMonth(windowMonth);
   }
   const closeChoice = useCallback(() => setChoice(null), []);
   function editChosenTrip() { if (!choice) return; setChoice(null); setConfirmed(null); onOpen(choice.trip); }
@@ -344,11 +373,24 @@ export function CalendarPlanner({ trips, rules, today, initialRuleId, tripStatus
       <button className="text-button" onClick={() => showMonth(today)}>Hoje</button>
       <button className="text-button" onClick={() => { const target = shiftMonth(firstMonth, -MONTH_STEP); setFirstMonth(target); setScrollTarget(firstMonth); }}>Meses anteriores</button>
     </div>
+    <div className="count-legend">
+      <span>O número em cada dia é a conta daquele dia: quantos dias no país dentro da janela.</span>
+      {rule && <button className={"button secondary count-toggle" + (inspecting ? " active" : "")} aria-pressed={inspecting} onClick={() => { if (inspecting) { setInspecting(false); setInspectDate(null); } else { setInspecting(true); inspect(today); } }}>{inspecting ? "Voltar a planejar" : "Ver a conta de um dia"}</button>}
+    </div>
     <section className="annual-calendar" aria-label="Calendário de viagens">
       {months.map((month) => <MonthCalendar key={month} month={month} today={today} resetLabel={rule && isCalendarYear(rule) && month.slice(5, 7) === "01" ? rule.label + ": contagem zera" : undefined} dayStates={dayStates} selectedRegion={region} selectedLabel={placeLabel(rule, country)} tripLabel={(trip) => placeLabel(ruleForTrip(rules, trip), trip.country)} conflictIds={conflictIds} selectedStart={selectedStart} selectedEnd={selectedEnd} onDay={onDay} />)}
     </section>
     <button className="button secondary month-more" onClick={() => setLastMonth(shiftMonth(lastMonth, MONTH_STEP))}>Ver mais meses</button>
-    <div className={"planner-footer" + (start ? " is-planning" : "")}>
+    {inspecting && rule ? <div className="planner-footer is-planning inspect-footer" role="status">
+      <div>
+        <span className="planner-label">A conta de {rule.label} · toque em qualquer dia</span>
+        {inspection && inspectDate ? <>
+          <strong>{longDate(inspectDate)}: {plural(inspection.used, "dia", "dias")} de {inspection.limit}</strong>
+          <small className={"footer-verdict " + (inspection.status === "over" ? "danger" : inspection.status === "warning" ? "warning" : "safe")}>{isCalendarYear(rule) ? "Contados de 1º de janeiro" : "Contados nos " + rule.windowDays + " dias de " + shortDate(inspection.windowStart)} até {shortDate(inspectDate)} (sublinhados no calendário){inspection.status === "over" ? " · acima do limite" : " · restam " + inspection.remaining}</small>
+        </> : <strong>Toque em um dia</strong>}
+      </div>
+      <div className="footer-actions"><button className="button secondary" onClick={() => { setInspecting(false); setInspectDate(null); }}>Voltar a planejar</button></div>
+    </div> : <div className={"planner-footer" + (start ? " is-planning" : "")}>
       <div>
         <span className="planner-label">Período</span>
         <strong>{candidate ? shortDate(candidate.start) + " — " + shortDate(candidate.end) + " · " + plural(selectedDays, "dia", "dias") : start ? "Entrada " + shortDate(start) + " — escolha a saída" : "—"}</strong>
@@ -358,7 +400,7 @@ export function CalendarPlanner({ trips, rules, today, initialRuleId, tripStatus
         {adjustTo && <button className="button secondary" onClick={() => adjustEnd(adjustTo)}>Sair em {shortDate(adjustTo)}</button>}
         <button className={"button primary" + (confirming ? " danger" : "")} onClick={saveSelection} disabled={!candidate || Boolean(conflict)}>{confirming ? "Salvar mesmo assim" : "Salvar"}</button>
       </div>
-    </div>
+    </div>}
     {trips.length > 0 && <section className="list-section planner-existing">
       <div className="section-heading small">
         <h2>Viagens</h2>
@@ -380,7 +422,7 @@ export function CalendarPlanner({ trips, rules, today, initialRuleId, tripStatus
   </div>;
 }
 
-function MonthCalendar({ month, today, resetLabel, dayStates, selectedRegion, selectedLabel, tripLabel, conflictIds, selectedStart, selectedEnd, onDay }: { month: string; today: string; resetLabel?: string; dayStates: Map<string, DayState>; selectedRegion: Region; selectedLabel: string; tripLabel: (trip: Trip) => string; conflictIds: Set<string>; selectedStart: string | null; selectedEnd: string | null; onDay: (date: string, trip?: Trip) => void }) {
+export function MonthCalendar({ month, today, resetLabel, dayStates, selectedRegion, selectedLabel, tripLabel, conflictIds, selectedStart, selectedEnd, onDay }: { month: string; today: string; resetLabel?: string; dayStates: Map<string, DayState>; selectedRegion: Region; selectedLabel: string; tripLabel: (trip: Trip) => string; conflictIds: Set<string>; selectedStart: string | null; selectedEnd: string | null; onDay: (date: string, trip?: Trip) => void }) {
   const year = Number(month.slice(0, 4));
   const monthIndex = Number(month.slice(5, 7)) - 1;
   const numberOfDays = new Date(Date.UTC(year, monthIndex + 1, 0)).getUTCDate();
@@ -403,7 +445,10 @@ function MonthCalendar({ month, today, resetLabel, dayStates, selectedRegion, se
       state?.forecast === "last" ? "último dia seguro" : state?.forecast === "warning" ? "zona de alerta" : state?.forecast === "over" ? "acima do limite" : state?.forecast === "blocked" ? "limite por viagem futura" : "",
       state?.tripOver ? "viagem acima do limite" : "",
       conflict ? "sobreposição com outro período" : "",
+      state?.count ? state.count.used + " de " + state.count.limit + " dias na conta" : "",
+      state?.inWindow ? "dentro da janela da conta" : "",
     ].filter(Boolean).join("; ");
+    const countLevel = state?.count ? (state.count.used > state.count.limit ? "over" : state.count.used >= state.count.warningAt ? "warning" : "ok") : "";
     const classes = "annual-day"
       + (trip ? " has-trip " + trip.region : "")
       + (state?.tripOver ? " trip-over" : "")
@@ -412,8 +457,11 @@ function MonthCalendar({ month, today, resetLabel, dayStates, selectedRegion, se
       + (selectedStart === date ? " selected-start" : "")
       + (selectedEnd === date ? " selected-end" : "")
       + (conflict ? " overlap-conflict" : "")
+      + (countLevel === "over" ? " count-over" : "")
+      + (state?.inWindow ? " in-window" : "")
+      + (state?.inspected ? " inspected" : "")
       + (date === today ? " today" : "");
-    return <button key={index} className={classes} aria-label={label} aria-pressed={selected} onClick={() => onDay(date, trip)}>{day}<span className="day-dot" />{conflict && <span className="conflict-mark" aria-hidden="true">!</span>}</button>;
+    return <button key={index} className={classes} aria-label={label} aria-pressed={selected} onClick={() => onDay(date, trip)}>{day}{state?.count ? <span className={"day-count " + countLevel} aria-hidden="true">{state.count.used}</span> : <span className="day-dot" />}{conflict && <span className="conflict-mark" aria-hidden="true">!</span>}</button>;
   });
   return <section id={"month-" + month.slice(0, 7)} className="year-month">
     <div className="year-month-header"><h3>{monthTitle(year, monthIndex)}</h3>{resetLabel ? <span className="year-reset">{resetLabel}</span> : <span>{hasTrips ? "com registros" : ""}</span>}</div>

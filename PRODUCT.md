@@ -48,7 +48,7 @@ The workspace belongs to Andrew, a Brazilian and Italian citizen who is tax resi
 - **Itália** — 90 days in any rolling 180, the owner's day budget (decided 2026-09-28).
 - **Brasil** — 180 days in any rolling 360, the owner's day budget.
 - The engine also supports calendar-year rules (e.g. Italy's statutory 183 days per calendar year); none is in the catalog today.
-- The counting must be visible: the app shows the window it counts, today's count, and when counted days leave the window.
+- The counting must be visible, on the calendar: every day of a stay shows its count (days in that country inside the window ending that day), amber near the limit and red above it; "Ver a conta de um dia" underlines the whole window behind a tapped day and gives its total; the itinerary planner draws the plan the same way before saving.
 - **Schengen** (90 in 180) stays in the catalog for other passports, off by default.
 
 Stored data carries a format `version`. Version 2 moved stays in Italy recorded under the old "schengen" region to the Italy rule.

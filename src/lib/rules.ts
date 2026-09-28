@@ -95,6 +95,21 @@ export function countedRuns(rule: Rule, trips: Trip[], date: string): CountedRun
   }
   return runs;
 }
+export type DayCount = { used: number; limit: number };
+/**
+ * For each day from `from` to `to` (inclusive): the days counted in the period ending that day and the limit that day, so
+ * the calendar can show the count on every day of a stay.
+ */
+export function dailyCounts(rule: Rule, trips: Trip[], from: string, to: string): Map<string, DayCount> {
+  const counts = new Map<string, DayCount>();
+  if (from > to) return counts;
+  const safeRule = sanitizeRule(rule);
+  const ledger = createLedger(trips, safeRule, periodStart(safeRule, from), to);
+  const used = usedSeries(ledger, safeRule);
+  const limits = limitSeries(ledger, safeRule);
+  for (let index = inclusiveDays(ledger.from, from) - 1, date = from; index < ledger.size; index++, date = addDays(date, 1)) counts.set(date, { used: used[index], limit: limits[index] });
+  return counts;
+}
 export type YearBudget = { year: number; used: number; limit: number; remaining: number; over: boolean };
 /** Days of a calendar-year rule in `year`, counting every saved trip (past and planned). */
 export function yearBudget(rule: Rule, trips: Trip[], year: number): YearBudget {

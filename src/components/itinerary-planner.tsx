@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { addDays, formatDate, itineraryTrips, planItinerary, ruleForTrip, usageLabel } from "@/lib/rules";
+import { addDays, dailyCounts, formatDate, itineraryTrips, planItinerary, ruleForTrip, usageLabel } from "@/lib/rules";
+import { MonthCalendar, type DayState } from "@/components/calendar-planner";
 import type { ItineraryLeg, LegPlan } from "@/lib/rules";
 import type { Rule, Trip } from "@/lib/types";
 
@@ -20,6 +21,42 @@ function nextLeg(rules: Rule[], trips: Trip[], start: string, legs: ItineraryLeg
   const leg = { ruleId: rule?.id, country: countryFor(rule), days: 1 };
   const maxDays = planItinerary(rules, trips, start, legs.concat(leg))[legs.length].maxDays;
   return { ...leg, days: maxDays === null ? DEFAULT_DAYS : Math.max(1, maxDays) };
+}
+
+function monthsBetween(start: string, end: string): string[] {
+  const months: string[] = [];
+  for (let year = Number(start.slice(0, 4)), month = Number(start.slice(5, 7)); months.length < 24; month++) {
+    if (month > 12) { month = 1; year++; }
+    const key = year + "-" + String(month).padStart(2, "0") + "-01";
+    if (key > end) break;
+    months.push(key);
+  }
+  return months;
+}
+
+/** The itinerary drawn on month calendars: each day in its country's color with that day's count, red when over. */
+function ItineraryCalendar({ rules, trips, plan, today }: { rules: Rule[]; trips: Trip[]; plan: LegPlan[]; today: string }) {
+  const states = useMemo(() => {
+    const planned = itineraryTrips(plan, "preview");
+    const all = trips.concat(planned);
+    const from = plan[0].start.slice(0, 8) + "01";
+    const to = plan[plan.length - 1].end;
+    const counts = new Map(rules.map((rule) => [rule.id, dailyCounts(rule, all, from, to)]));
+    const result = new Map<string, DayState>();
+    for (const trip of planned.concat(trips)) {
+      const rule = ruleForTrip(rules, trip);
+      for (let date = trip.start > from ? trip.start : from; date <= trip.end && date <= to; date = addDays(date, 1)) {
+        if (result.has(date)) continue;
+        const count = rule ? counts.get(rule.id)?.get(date) : undefined;
+        result.set(date, { trip, count: count && rule ? { ...count, warningAt: rule.warningAt } : undefined });
+      }
+    }
+    return result;
+  }, [rules, trips, plan]);
+  const months = monthsBetween(plan[0].start.slice(0, 8) + "01", plan[plan.length - 1].end);
+  return <div className="itinerary-months annual-calendar">
+    {months.map((month) => <MonthCalendar key={month} month={month} today={today} dayStates={states} selectedRegion="other" selectedLabel="" tripLabel={(trip) => ruleForTrip(rules, trip)?.label ?? trip.country} conflictIds={new Set()} selectedStart={null} selectedEnd={null} onDay={() => undefined} />)}
+  </div>;
 }
 
 function Verdict({ leg }: { leg: LegPlan }) {
@@ -127,6 +164,11 @@ export function ItineraryPlanner({ rules, trips, today, onClose, onSave }: Props
         })}
       </ol>
       <button className="button secondary itinerary-add" onClick={addLeg}>＋ Adicionar destino</button>
+      <details className="itinerary-preview">
+        <summary>Ver no calendário</summary>
+        <p>Cada dia mostra a conta daquele dia: quantos dias no país dentro da janela (Itália 180, Brasil 360). Vermelho passa do limite.</p>
+        <ItineraryCalendar rules={rules} trips={trips} plan={plan} today={today} />
+      </details>
 
       <div className="itinerary-footer">
         <div><span className="planner-label">Itinerário</span><strong>{shortDate(validStart)} → {longDate(finalDay)} · {plural(plan.length, "destino", "destinos")}</strong>{blocked ? <small className="footer-verdict danger">Resolva o conflito para salvar</small> : risky ? <small className="footer-verdict danger">Há destino acima do limite</small> : <small className="footer-verdict safe">Tudo dentro do limite</small>}</div>
