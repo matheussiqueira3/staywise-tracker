@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { DEFAULT_RULES, addDays, analyzeTrip, currentTrip, daysInWindow, earliestEntryFor, findConflicts, formatDate, formatFullDate, inclusiveDays, isBuiltInRule, isoToday, maxSafeStay, parseDate, parseRuleNumbers, ruleForTrip, simulateTrip, statusFor, tripMatchesRule, tripStatuses, upcomingTrips } from "./rules";
-import { decodeState, encodeState, normalizeState } from "./share";
+import { CATALOG_RULES, DEFAULT_RULES, addDays, describeRule, limitOn, yearBudget, analyzeTrip, currentTrip, daysInWindow, earliestEntryFor, findConflicts, formatDate, formatFullDate, inclusiveDays, isBuiltInRule, isoToday, maxSafeStay, parseDate, parseRuleNumbers, ruleForTrip, simulateTrip, statusFor, tripMatchesRule, tripStatuses, upcomingTrips } from "./rules";
+import { STATE_VERSION, decodeState, encodeState, normalizeState } from "./share";
+import { seedState } from "@/data/seed";
 import type { Rule } from "./types";
 import type { Trip } from "./types";
 
 const brazil = DEFAULT_RULES[0];
-const schengen = DEFAULT_RULES[1];
+const schengen = CATALOG_RULES.find((rule) => rule.id === "schengen")!;
+const italy = CATALOG_RULES.find((rule) => rule.id === "italy")!;
 const thailand: Rule = { id: "custom-th", label: "Tailândia", countryCode: "TH", region: "other", limit: 60, windowDays: 180, warningAt: 45 };
 const japan: Rule = { id: "custom-jp", label: "Japão", countryCode: "JP", region: "other", limit: 90, windowDays: 180, warningAt: 75 };
 
@@ -303,7 +305,7 @@ test("maxSafeStay: para antes de agravar uma viagem futura que já excede", () =
 // Regression (M1): "already over" is judged on the whole saved trip, not only on the days the candidate reaches.
 test("simulateTrip: viagem futura que já excede fora do alcance da nova é agravada, não afetada", () => {
   const long = trip("long", "schengen", "2027-04-10", "2027-07-18"); // 100 dias: excede sozinha (pior dia 100 em 2027-07-18)
-  assert.equal(tripStatuses(DEFAULT_RULES, [long]).get("long")?.excessDays, 10);
+  assert.equal(tripStatuses(CATALOG_RULES, [long]).get("long")?.excessDays, 10);
   const result = simulateTrip(schengen, [long], trip("new", "schengen", "2027-01-01", "2027-01-10"));
   assert.equal(result.firstOverDate, undefined);
   assert.equal(result.affectedTrips.length, 0);
@@ -345,7 +347,7 @@ test("isoToday usa a data local, não a UTC", () => {
 });
 
 test("tripStatuses: ok, warning, over e none", () => {
-  const rules = DEFAULT_RULES;
+  const rules = CATALOG_RULES;
   const trips = [
     trip("ok", "schengen", "2026-01-01", "2026-01-10"),
     trip("exact", "schengen", "2027-01-01", addDays("2027-01-01", 89)), // exatamente 90: alerta, não excesso
@@ -376,14 +378,14 @@ test("tripStatuses: conta viagens anteriores e não duplica sobreposições", ()
   const first = trip("first", "schengen", "2027-01-01", "2027-02-14"); // 45 dias
   const overlap = trip("overlap", "schengen", "2027-02-01", "2027-03-02"); // sobrepõe 14 dias, 16 novos
   const later = trip("later", "schengen", "2027-03-10", "2027-04-08"); // 30 dias
-  const statuses = tripStatuses(DEFAULT_RULES, [first, overlap, later]);
+  const statuses = tripStatuses(CATALOG_RULES, [first, overlap, later]);
   assert.equal(statuses.get("first")?.maxUsed, 45);
   assert.equal(statuses.get("overlap")?.maxUsed, 61);
   assert.equal(statuses.get("later")?.maxUsed, 91);
   assert.equal(statuses.get("later")?.status, "over");
   assert.equal(statuses.get("later")?.firstOverDate, "2027-04-08");
   assert.equal(statuses.get("overlap")?.status, "ok");
-  assert.equal(tripStatuses(DEFAULT_RULES, [first, overlap, { ...later, end: "2027-04-07" }]).get("later")?.status, "warning");
+  assert.equal(tripStatuses(CATALOG_RULES, [first, overlap, { ...later, end: "2027-04-07" }]).get("later")?.status, "warning");
 });
 
 test("tripStatuses: 100 viagens em poucos milissegundos, igual à contagem dia a dia", () => {
@@ -393,7 +395,7 @@ test("tripStatuses: 100 viagens em poucos milissegundos, igual à contagem dia a
     return trip("p" + index, random() < 0.5 ? "schengen" : "brazil", start, addDays(start, Math.floor(random() * 30)));
   });
   const began = performance.now();
-  const statuses = tripStatuses(DEFAULT_RULES, trips);
+  const statuses = tripStatuses(CATALOG_RULES, trips);
   const elapsed = performance.now() - began;
   assert(elapsed < 200, "tripStatuses took " + elapsed.toFixed(1) + " ms");
   for (const saved of trips.slice(0, 10)) {
@@ -498,9 +500,19 @@ function referenceLaterImpacts(rule: Rule, trips: Trip[], start: string, end: st
   };
   const without = occupancy(trips);
   const withNew = occupancy([...trips, { ...trip("new", rule.region, start, end), ruleId: rule.id }]);
-  const usedOn = (days: Set<number>, day: number) => { let count = 0; for (let back = 0; back < rule.windowDays; back++) if (days.has(day - back)) count++; return count; };
+  // Calendar-year rules count back to 1 January of the day's year and allow one more day in leap years.
+  const calendar = rule.kind === "calendar-year";
+  const yearOf = (day: number) => new Date(day * 86400000 - 43200000).getUTCFullYear(); // dayNumber rounds noon UTC up
+  const leap = (year: number) => (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+  const limitFor = (day: number) => calendar && leap(yearOf(day)) ? rule.leapYearLimit ?? rule.limit : rule.limit;
+  const usedOn = (days: Set<number>, day: number) => {
+    let count = 0;
+    if (calendar) { for (let back = day; yearOf(back) === yearOf(day); back--) if (days.has(back)) count++; return count; }
+    for (let back = 0; back < rule.windowDays; back++) if (days.has(day - back)) count++;
+    return count;
+  };
   const exit = dayNumber(end);
-  const reach = exit + rule.windowDays - 1;
+  const reach = calendar ? dayNumber(yearOf(exit) + "-12-31") : exit + rule.windowDays - 1;
   const affected = new Map<string, [string, number]>();
   const worsened = new Map<string, [string, number]>();
   let overOnlyOutOfReach = 0; // worsened trips that are within the limit on every day the candidate reaches
@@ -510,17 +522,17 @@ function referenceLaterImpacts(rule: Rule, trips: Trip[], start: string, end: st
     const last = dayNumber(saved.end);
     if (last <= exit || first > reach) continue;
     let alreadyOver = false;
-    for (let day = first; day <= last && !alreadyOver; day++) alreadyOver = usedOn(without, day) > rule.limit;
+    for (let day = first; day <= last && !alreadyOver; day++) alreadyOver = usedOn(without, day) > limitFor(day);
     let firstImpacted: string | undefined;
     let excess = 0;
     let overInReach = false;
     for (let day = Math.max(first, exit + 1); day <= Math.min(last, reach); day++) {
       const usedWith = usedOn(withNew, day);
       const usedWithout = usedOn(without, day);
-      overInReach ||= usedWithout > rule.limit;
-      if (usedWith <= rule.limit || usedWith <= usedWithout) continue;
+      overInReach ||= usedWithout > limitFor(day);
+      if (usedWith <= limitFor(day) || usedWith <= usedWithout) continue;
       firstImpacted ??= addDays(end, day - exit);
-      excess = Math.max(excess, alreadyOver ? usedWith - Math.max(usedWithout, rule.limit) : usedWith - rule.limit);
+      excess = Math.max(excess, alreadyOver ? usedWith - Math.max(usedWithout, limitFor(day)) : usedWith - limitFor(day));
     }
     if (firstImpacted) (alreadyOver ? worsened : affected).set(saved.id, [firstImpacted, excess]);
     if (firstImpacted && alreadyOver && !overInReach) overOnlyOutOfReach++;
@@ -665,11 +677,11 @@ test("simulateTrip, maxSafeStay e tripStatuses: regra customizada e regras nativ
   // A thai stay right before the saved thai trip pushes it over; the Brazil trip is untouched.
   const before = simulateTrip(thailand, trips, { region: "other", ruleId: thailand.id, start: "2027-03-20", end: "2027-03-25" });
   assert.deepEqual(before.affectedTrips.map((item) => item.trip.id), ["th"]);
-  const statuses = tripStatuses([...DEFAULT_RULES, thailand], trips);
+  const statuses = tripStatuses([...CATALOG_RULES, thailand], trips);
   assert.equal(statuses.get("br")?.maxUsed, 90);
   assert.equal(statuses.get("th")?.maxUsed, 60);
   assert.equal(statuses.get("th")?.status, "warning");
-  assert.equal(tripStatuses(DEFAULT_RULES, trips).get("th")?.status, "none");
+  assert.equal(tripStatuses(CATALOG_RULES, trips).get("th")?.status, "none");
 });
 
 test("viagem 'Outro' sem regra não conta para nenhuma regra", () => {
@@ -761,8 +773,16 @@ test("migra regras legadas sem código de país", () => {
     ],
   });
   assert.equal(state?.rules.find((rule) => rule.id === "brazil")?.countryCode, "BR");
-  assert.equal(state?.rules.find((rule) => rule.id === "schengen")?.countryCode, "SCHENGEN");
   assert.equal(state?.trips[0]?.ruleId, "brazil");
+  // The old default Schengen rule no trip uses leaves the workspace; Italy joins it.
+  assert.deepEqual(state?.rules.map((rule) => rule.id), ["brazil", "italy"]);
+  // A Schengen stay outside Italy keeps the Schengen rule, with its catalog country code.
+  const france = normalizeState({
+    trips: [{ id: "fr", region: "schengen", country: "France", start: "2026-01-01", end: "2026-01-02" }],
+    rules: [{ id: "schengen", label: "Schengen", region: "schengen", limit: 90, windowDays: 180, warningAt: 75 }],
+  });
+  assert.equal(france?.rules.find((rule) => rule.id === "schengen")?.countryCode, "SCHENGEN");
+  assert.equal(france?.trips[0]?.ruleId, "schengen");
 });
 
 test("preserva viagem legada de outro país sem misturá-la a regras customizadas", () => {
@@ -782,10 +802,11 @@ test("preserva viagem legada de outro país sem misturá-la a regras customizada
 
 test("estado produzido pelo app sobrevive a normalizeState e ao link de compartilhamento sem mudanças", () => {
   const state = {
+    version: STATE_VERSION,
     rules: [...DEFAULT_RULES, thailand],
     trips: [
       { id: "b", ruleId: "brazil", region: "brazil" as const, country: "Brazil", start: "2026-01-01", end: "2026-01-10" },
-      { id: "s", ruleId: "schengen", region: "schengen" as const, country: "Italy", start: "2026-02-01", end: "2026-02-10", notes: "Roma" },
+      { id: "s", ruleId: "italy", region: "italy" as const, country: "Italy", start: "2026-02-01", end: "2026-02-10", notes: "Roma" },
       { id: "t", ruleId: thailand.id, region: "other" as const, country: "Tailândia", start: "2026-03-01", end: "2026-03-10" },
       { id: "o", region: "other" as const, country: "Peru", start: "2026-04-01", end: "2026-04-10" }, // "Outro (sem regra)"
     ],
@@ -795,8 +816,10 @@ test("estado produzido pelo app sobrevive a normalizeState e ao link de comparti
   assert.deepEqual(normalizeState(once), once);
   assert.deepEqual(decodeState(encodeState(state)), once);
   // Legacy built-in trips gain their ruleId once, then stay stable.
+  // A legacy Schengen stay in Italy becomes an Italy stay once, then stays stable.
   const legacy = normalizeState({ rules: DEFAULT_RULES, trips: [{ id: "l", region: "schengen", country: "Italy", start: "2026-01-01", end: "2026-01-02" }] });
-  assert.equal(legacy?.trips[0].ruleId, "schengen");
+  assert.equal(legacy?.trips[0].ruleId, "italy");
+  assert.equal(legacy?.trips[0].region, "italy");
   assert.deepEqual(normalizeState(legacy), legacy);
 });
 
@@ -820,4 +843,110 @@ test("apenas regras do catálogo com região própria são embutidas", () => {
   assert.equal(isBuiltInRule(brazil), true);
   assert.equal(isBuiltInRule(schengen), true);
   assert.equal(isBuiltInRule(thailand), false);
+});
+
+// Italy, fiscal presence: at most 182 days per calendar year (183 in leap years); the 183rd (184th) day makes him resident.
+function italyTrip(id: string, start: string, end: string): Trip { return { id, ruleId: "italy", region: "italy", country: "Italy", start, end }; }
+
+test("Itália: 182 dias no ano são permitidos, o 183º excede; em ano bissexto o limite é 183", () => {
+  assert.equal(limitOn(italy, "2026-06-01"), 182);
+  assert.equal(limitOn(italy, "2028-06-01"), 183);
+  assert.equal(describeRule(italy), "182 dias por ano civil (183 em ano bissexto)");
+  assert.equal(analyzeTrip(italy, [], "italy", "2026-01-01", addDays("2026-01-01", 181)).safe, true); // 182 dias
+  const over = analyzeTrip(italy, [], "italy", "2026-01-01", addDays("2026-01-01", 182)); // 183 dias
+  assert.equal(over.firstOverDate, addDays("2026-01-01", 182));
+  assert.equal(analyzeTrip(italy, [], "italy", "2028-01-01", addDays("2028-01-01", 182)).safe, true); // 183 dias, bissexto
+  assert.equal(analyzeTrip(italy, [], "italy", "2028-01-01", addDays("2028-01-01", 183)).firstOverDate, addDays("2028-01-01", 183));
+});
+
+test("Itália: entrada em 1º de janeiro sem histórico pode ficar até 1º de julho", () => {
+  assert.equal(maxSafeStay(italy, [], "italy", "2027-01-01").lastSafeDate, "2027-07-01");
+  assert.equal(maxSafeStay(italy, [], "italy", "2027-01-01").daysAvailable, 182);
+  assert.equal(maxSafeStay(italy, [], "italy", "2028-01-01").lastSafeDate, "2028-07-01"); // 183 dias no bissexto
+});
+
+test("Itália: a contagem zera em 1º de janeiro e uma estadia pode atravessar o ano", () => {
+  const spring = italyTrip("spring", "2026-01-01", addDays("2026-01-01", 169)); // 170 dias em 2026
+  // 12 dias restantes em 2026 (20–31 dez) e depois o orçamento inteiro de 2027.
+  const crossing = maxSafeStay(italy, [spring], "italy", "2026-12-20");
+  assert.equal(crossing.lastSafeDate, "2027-07-01");
+  assert.equal(crossing.limitedBy, "limit");
+  // Com 175 dias usados sobram 7: sai em 26 de dezembro.
+  const tight = maxSafeStay(italy, [italyTrip("long", "2026-01-01", addDays("2026-01-01", 174))], "italy", "2026-12-20");
+  assert.equal(tight.lastSafeDate, "2026-12-26");
+  assert.equal(tight.firstOverDate, "2026-12-27");
+  // Dias de anos anteriores não contam.
+  assert.equal(statusFor(italy, [spring], "2027-01-05").used, 0);
+  assert.equal(statusFor(italy, [spring, italyTrip("jan", "2027-01-01", "2027-01-05")], "2027-01-05").used, 5);
+});
+
+test("Itália: uma viagem no início do ano pode fazer uma viagem de outubro exceder, mas não afeta o ano seguinte", () => {
+  const winter = italyTrip("winter", "2026-01-01", addDays("2026-01-01", 139)); // 140 dias
+  const october = italyTrip("october", "2026-10-01", "2026-10-31"); // 31 dias: 171 no ano
+  const nextYear = italyTrip("next", "2027-02-01", "2027-02-28");
+  const simulation = simulateTrip(italy, [winter, october, nextYear], { region: "italy", ruleId: "italy", start: "2026-06-01", end: "2026-06-20" }); // +20 = 191
+  assert.equal(simulation.firstOverDate, undefined); // a própria viagem fica em 160
+  assert.deepEqual(simulation.affectedTrips.map((item) => [item.trip.id, item.firstOverDate, item.excessDays]), [["october", "2026-10-23", 9]]);
+  assert.equal(simulation.safe, false);
+  const forecast = maxSafeStay(italy, [winter, october, nextYear], "italy", "2026-06-01");
+  assert.equal(forecast.limitedBy, "later-trip");
+  assert.equal(forecast.lastSafeDate, "2026-06-11"); // 11 dias: 140 + 11 + 31 = 182
+  assert.equal(yearBudget(italy, [winter, october, nextYear], 2026).remaining, 11);
+  assert.deepEqual(yearBudget(italy, [winter, october], 2028), { year: 2028, used: 0, limit: 183, remaining: 183, over: false });
+});
+
+test("dia de viagem: termina um país e começa outro no mesmo dia, e o dia conta para os dois", () => {
+  const brazilStay = { ...trip("br", "brazil", "2026-03-01", "2026-03-10"), ruleId: "brazil" };
+  const italyStay = italyTrip("it", "2026-03-10", "2026-03-20");
+  assert.deepEqual(findConflicts([brazilStay], italyStay).otherRegion, []);
+  assert.equal(daysInWindow([brazilStay, italyStay], brazil, "2026-03-10", "2026-03-10"), 1);
+  assert.equal(daysInWindow([brazilStay, italyStay], italy, "2026-03-10", "2026-03-10"), 1);
+  // Mais de um dia em comum, ou um dia no meio de outra estadia, continua sendo conflito.
+  assert.equal(findConflicts([brazilStay], italyTrip("x", "2026-03-09", "2026-03-20")).otherRegion.length, 1);
+  assert.equal(findConflicts([brazilStay], italyTrip("y", "2026-03-05", "2026-03-05")).otherRegion.length, 1);
+});
+
+test("histórico importado: dias fora do Brasil viram Itália e dão as respostas de Andrew", () => {
+  assert.equal(seedState.version, STATE_VERSION);
+  assert.equal(seedState.trips.length, 19);
+  assert.deepEqual([...new Set(seedState.trips.map((item) => item.ruleId))].sort(), ["brazil", "italy"]);
+  assert.deepEqual(seedState.rules.map((rule) => rule.id), ["brazil", "italy"]);
+  assert.deepEqual(yearBudget(italy, seedState.trips, 2025), { year: 2025, used: 213, limit: 182, remaining: 0, over: true });
+  // Estadia atual na Itália (22 set – 7 nov 2026): o 182º dia do ano é 29 de outubro.
+  const current = seedState.trips.find((item) => item.ruleId === "italy" && item.start === "2026-09-22")!;
+  const forecast = maxSafeStay(italy, seedState.trips.filter((item) => item.id !== current.id), "italy", current.start);
+  assert.equal(forecast.lastSafeDate, "2026-10-29");
+  assert.equal(tripStatuses(seedState.rules, seedState.trips).get(current.id)?.firstOverDate, "2026-10-30");
+  assert.equal(maxSafeStay(italy, seedState.trips, "italy", "2027-01-01").lastSafeDate, "2027-07-01");
+});
+
+test("motor rápido: regra de ano civil equivale ao algoritmo original em 200 cenários aleatórios", () => {
+  const random = seededRandom(2028);
+  const pick = (max: number) => Math.floor(random() * max);
+  let impactedRuns = 0;
+  let crossingRuns = 0;
+  for (let run = 0; run < 200; run++) {
+    const limit = 20 + pick(170);
+    const rule: Rule = { ...italy, limit, leapYearLimit: limit + pick(2), warningAt: Math.min(limit, 15) };
+    const trips: Trip[] = Array.from({ length: pick(9) }, (_, index) => {
+      const start = addDays("2026-01-01", pick(1300)); // 2026–2029, com 2028 bissexto
+      const saved = italyTrip("t" + index, start, addDays(start, random() < 0.4 ? pick(200) : pick(40)));
+      return random() < 0.85 ? saved : { ...saved, ruleId: "brazil", region: "brazil" as const };
+    });
+    const start = addDays("2026-06-01", pick(900));
+    const end = addDays(start, pick(150));
+    if (start.slice(0, 4) !== end.slice(0, 4)) crossingRuns++;
+    assert.deepEqual(analyzeTrip(rule, trips, "italy", start, end), referenceAnalyze(rule, trips, "italy", start, end), "analyzeTrip run " + run);
+    const candidate = { region: "italy" as const, ruleId: rule.id };
+    const simulation = simulateTrip(rule, trips, { ...candidate, start, end });
+    const expected = referenceLaterImpacts(rule, trips, start, end);
+    const toMap = (items: typeof simulation.affectedTrips) => new Map(items.map((item): [string, [string, number]] => [item.trip.id, [item.firstOverDate, item.excessDays]]));
+    assert.deepEqual(toMap(simulation.affectedTrips), expected.affected, "affected trips run " + run);
+    assert.deepEqual(toMap(simulation.worsenedTrips), expected.worsened, "worsened trips run " + run);
+    if (expected.affected.size || expected.worsened.size) impactedRuns++;
+    const forecast = maxSafeStay(rule, trips, "italy", start);
+    if (forecast.lastSafeDate) assert.equal(simulateTrip(rule, trips, { ...candidate, start, end: forecast.lastSafeDate }).safe, true, "last safe date is safe, run " + run);
+    if (forecast.firstOverDate) assert.equal(simulateTrip(rule, trips, { ...candidate, start, end: forecast.firstOverDate }).safe, false, "first over date is unsafe, run " + run);
+  }
+  assert(impactedRuns >= 10 && crossingRuns >= 20, `scenarios cover later-trip impacts (${impactedRuns}) and New Year crossings (${crossingRuns})`);
 });

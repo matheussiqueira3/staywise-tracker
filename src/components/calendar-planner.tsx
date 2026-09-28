@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { addDays, earliestEntryFor, findConflicts, formatDate, inclusiveDays, maxSafeStay, ruleForTrip, simulateTrip, statusFor } from "@/lib/rules";
+import { addDays, earliestEntryFor, findConflicts, formatDate, inclusiveDays, isCalendarYear, limitOn, limitPhrase, maxSafeStay, maxStayLength, ruleForTrip, simulateTrip, statusFor, usageLabel, yearBudget } from "@/lib/rules";
 import type { AffectedTrip, MaxSafeStay, TripSimulation, TripStatus } from "@/lib/rules";
 import type { Region, Rule, Trip } from "@/lib/types";
 
@@ -25,7 +25,7 @@ function shortDate(value: string) { return formatDate(value, { day: "2-digit", m
 function longDate(value: string) { return formatDate(value, { day: "2-digit", month: "short", year: "numeric" }); }
 function plural(count: number, one: string, many: string) { return count + " " + (count === 1 ? one : many); }
 /** Default country typed for a rule: built-in regions keep their usual country, custom rules use their own name. */
-export function defaultCountry(rule?: Rule) { return !rule ? "" : rule.region === "brazil" ? "Brazil" : rule.region === "schengen" ? "Italy" : rule.label; }
+export function defaultCountry(rule?: Rule) { return !rule ? "" : rule.region === "brazil" ? "Brazil" : rule.region === "italy" || rule.region === "schengen" ? "Italy" : rule.label; }
 /** Rule picked by a picker value; an unknown id (e.g. a rule gone after a reload) falls back to the first rule. */
 export function ruleForChoice(rules: Rule[], choice: string): Rule | undefined { return choice === NO_RULE ? undefined : rules.find((rule) => rule.id === choice) || rules[0]; }
 /** Trip fields that say which rule it counts toward; a rule-less trip is region "other" without a ruleId. */
@@ -37,6 +37,33 @@ export function TripStatusBadge({ status }: { status?: TripStatus }) {
   if (status?.status === "over") return <span className="trip-badge over">Excede {plural(status.excessDays, "dia", "dias")}</span>;
   if (status?.status === "warning") return <span className="trip-badge warning">Perto do limite</span>;
   return null;
+}
+
+/**
+ * Days left under one rule. A calendar-year rule shows this year and next, counting planned trips too, since what matters
+ * is the year's total; a rolling rule shows today's window.
+ */
+function BudgetCard({ rule, trips, today, active }: { rule: Rule; trips: Trip[]; today: string; active: boolean }) {
+  const tone = (used: number, limit: number) => used > limit ? "over" : used > 0 && used >= rule.warningAt ? "warning" : "ok";
+  const left = (remaining: number, over: boolean) => over ? "acima do limite" : remaining > 0 ? plural(remaining, "dia disponível", "dias disponíveis") : "limite atingido";
+  if (isCalendarYear(rule)) {
+    const year = Number(today.slice(0, 4));
+    const current = yearBudget(rule, trips, year);
+    const next = yearBudget(rule, trips, year + 1);
+    return <div className={"status-card " + tone(current.used, current.limit) + (active ? " active" : "")}>
+      <div className="status-header">{rule.label} · {year}</div>
+      <div className="status-numbers"><strong>{current.used}<small> / {current.limit}</small></strong></div>
+      <div className="status-label">{left(current.remaining, current.over)}</div>
+      <div className="status-next">{year + 1}: {next.over ? "acima do limite" : plural(next.remaining, "dia disponível", "dias disponíveis")}</div>
+    </div>;
+  }
+  const status = statusFor(rule, trips, today);
+  return <div className={"status-card " + status.status + (active ? " active" : "")}>
+    <div className="status-header">{rule.label} · hoje</div>
+    <div className="status-numbers"><strong>{status.used}<small> / {status.limit}</small></strong></div>
+    <div className="status-label">{left(status.remaining, status.status === "over")}</div>
+    <div className="status-next">{rule.limit} a cada {rule.windowDays} dias</div>
+  </div>;
 }
 
 function LimitReason({ forecast }: { forecast: MaxSafeStay }) {
@@ -54,13 +81,13 @@ function ForecastCard({ forecast, rule }: { forecast: MaxSafeStay; rule: Rule })
     <span className="forecast-region">{rule.label}</span>
     <strong>Sem dias disponíveis nesta entrada</strong>
     <LimitReason forecast={forecast} />
-    {forecast.limitedBy !== "later-trip" && <small>Todos os {rule.limit} dias da janela de {rule.windowDays} já estão em uso.</small>}
+    {forecast.limitedBy !== "later-trip" && <small>{isCalendarYear(rule) ? "Todos os " + limitOn(rule, forecast.start) + " dias de " + forecast.start.slice(0, 4) + " já estão em uso." : "Todos os " + rule.limit + " dias da janela de " + rule.windowDays + " já estão em uso."}</small>}
   </div>;
   return <div className="forecast-card safe" role="status">
     <span className="forecast-region">{rule.label} · entrada {shortDate(forecast.start)}</span>
     <strong>Pode ficar até <span className="forecast-date">{longDate(forecast.lastSafeDate)}</span></strong>
     <small>{plural(forecast.daysAvailable, "dia disponível", "dias disponíveis")}. Toque no dia de saída.</small>
-    {forecast.firstWarningDate && <small className="forecast-warning-line">Entra na zona de alerta em {longDate(forecast.firstWarningDate)} ({rule.warningAt} de {rule.limit} dias).</small>}
+    {forecast.firstWarningDate && <small className="forecast-warning-line">Entra na zona de alerta em {longDate(forecast.firstWarningDate)} ({rule.warningAt} de {limitOn(rule, forecast.firstWarningDate)} dias).</small>}
     <LimitReason forecast={forecast} />
   </div>;
 }
@@ -74,7 +101,7 @@ function SelectionSummary({ days, end, simulation, forecast, conflict, rule, onA
   const affected = simulation.affectedTrips.map((item) => <small key={item.trip.id} className="forecast-affected">Sua viagem de {shortDate(item.trip.start)} — {shortDate(item.trip.end)} ({item.trip.country}) passaria a exceder em {plural(item.excessDays, "dia", "dias")} a partir de {longDate(item.firstOverDate)}.</small>);
   if (simulation.firstOverDate) return <div className="forecast-card danger" role="alert">
     <strong>{plural(days, "dia", "dias")} · excede em {plural(simulation.excessDays, "dia", "dias")}</strong>
-    <small>O limite de {rule.limit} dias é ultrapassado em {longDate(simulation.firstOverDate)}.{lastSafe ? " Último dia seguro: " + longDate(lastSafe) + "." : ""}</small>
+    <small>O {limitPhrase(rule, simulation.firstOverDate)} é ultrapassado em {longDate(simulation.firstOverDate)}.{lastSafe ? " Último dia seguro: " + longDate(lastSafe) + "." : ""}</small>
     {affected}
     {worsened}
     {adjust}
@@ -88,7 +115,7 @@ function SelectionSummary({ days, end, simulation, forecast, conflict, rule, onA
   const slack = lastSafe && lastSafe > end ? inclusiveDays(end, lastSafe) - 1 : 0;
   return <div className={"forecast-card " + (simulation.firstWarningDate ? "warning" : "safe")} role="status">
     <strong>{plural(days, "dia", "dias")} · dentro do limite</strong>
-    <small>Pico de {simulation.maxUsed} de {rule.limit} dias na janela.{slack > 0 && lastSafe ? " Ainda sobrariam " + plural(slack, "dia", "dias") + " (até " + shortDate(lastSafe) + ")." : " Você sai exatamente no último dia seguro."}</small>
+    <small>Pico de {usageLabel(rule, simulation.maxUsed, simulation.maxUsedDate)}.{slack > 0 && lastSafe ? " Ainda sobrariam " + plural(slack, "dia", "dias") + " (até " + shortDate(lastSafe) + ")." : " Você sai exatamente no último dia seguro."}</small>
   </div>;
 }
 
@@ -103,15 +130,15 @@ function EarliestEntry({ rule, trips, today, onApply }: { rule: Rule; trips: Tri
     <summary>Quando posso ficar N dias em {rule.label}?</summary>
     <div className="earliest-body">
     <label htmlFor="earliest-length">Quero ficar</label>
-    <input id="earliest-length" type="number" inputMode="numeric" min="1" max={rule.limit} placeholder="30" value={length} onChange={(event) => setLength(event.target.value)} />
+    <input id="earliest-length" type="number" inputMode="numeric" min="1" max={maxStayLength(rule)} placeholder="30" value={length} onChange={(event) => setLength(event.target.value)} />
     <span>dias em {rule.label}</span>
     <span className="earliest-from"><label htmlFor="earliest-from">a partir de</label><input id="earliest-from" type="date" value={fromInput} onChange={(event) => setFromInput(event.target.value)} /></span>
-    {valid && <p role="status">{days > rule.limit ? "Acima do limite de " + rule.limit + " dias." : result ? <>Primeira entrada possível em ou após {longDate(from)}: <strong>{longDate(result.start)}</strong> <button className="text-button" onClick={() => onApply(result.start, result.end)}>Ver no calendário</button></> : "Nenhuma data possível nos 2 anos a partir de " + longDate(from) + "."}</p>}
+    {valid && <p role="status">{days > maxStayLength(rule) ? "Acima do máximo de " + maxStayLength(rule) + " dias." : result ? <>Primeira entrada possível em ou após {longDate(from)}: <strong>{longDate(result.start)}</strong> <button className="text-button" onClick={() => onApply(result.start, result.end)}>Ver no calendário</button></> : "Nenhuma data possível nos 2 anos a partir de " + longDate(from) + "."}</p>}
     </div>
   </details>;
 }
 
-function DayChoiceSheet({ choice, onEdit, onStart, onClose }: { choice: DayChoice; onEdit: () => void; onStart: () => void; onClose: () => void }) {
+function DayChoiceSheet({ choice, startLabel, onEdit, onStart, onClose }: { choice: DayChoice; startLabel: string; onEdit: () => void; onStart: () => void; onClose: () => void }) {
   const sheetRef = useRef<HTMLElement>(null);
   useEffect(() => {
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -136,7 +163,7 @@ function DayChoiceSheet({ choice, onEdit, onStart, onClose }: { choice: DayChoic
       <p id="day-choice-detail" className="choice-detail">{trip.country} · {shortDate(trip.start)} — {longDate(trip.end)}</p>
       <div className="choice-actions">
         <button className="button secondary" onClick={onEdit}>Editar viagem</button>
-        <button className="button primary" onClick={onStart}>Começar entrada aqui</button>
+        <button className="button primary" onClick={onStart}>{startLabel}</button>
         <button className="button secondary" onClick={onClose}>Cancelar</button>
       </div>
     </section>
@@ -168,7 +195,6 @@ export function CalendarPlanner({ trips, rules, today, initialRuleId, tripStatus
   const overlapping = useMemo(() => selectedStart ? findConflicts(trips, { ruleId, region, start: selectedStart, end: selectedEnd ?? selectedStart }).otherRegion : [], [trips, ruleId, region, selectedStart, selectedEnd]);
   const conflictIds = useMemo(() => new Set(overlapping.map((trip) => trip.id)), [overlapping]);
   const conflict = candidate ? overlapping[0] : undefined;
-  const statuses = useMemo(() => rules.map((item) => statusFor(item, trips, today)), [rules, trips, today]);
   const months = monthsBetween(firstMonth, lastMonth);
   const selectedDays = candidate ? inclusiveDays(candidate.start, candidate.end) : 0;
   const candidateKey = candidate ? selectedRuleId + "|" + candidate.start + "|" + candidate.end : null;
@@ -181,11 +207,11 @@ export function CalendarPlanner({ trips, rules, today, initialRuleId, tripStatus
   const firstAffected = simulation?.affectedTrips[0] ?? simulation?.worsenedTrips[0];
   const blocking = forecast?.limitedBy === "later-trip" ? forecast.blockingTrip?.trip : undefined;
   const verdict: { tone: string; text: string; detail?: string } | null = conflict ? { tone: "danger", text: "Conflito com " + conflict.country }
-    : simulation ? (simulation.firstOverDate ? { tone: "danger", text: "Excede em " + plural(simulation.excessDays, "dia", "dias"), detail: "Passa do limite em " + shortDate(simulation.firstOverDate) + (lastSafe ? " · último dia seguro " + shortDate(lastSafe) : "") }
+    : simulation ? (simulation.firstOverDate ? { tone: "danger", text: (rule && isCalendarYear(rule) ? simulation.firstOverDate.slice(0, 4) + ": excede" : "Excede") + " em " + plural(simulation.excessDays, "dia", "dias"), detail: "Passa do limite em " + shortDate(simulation.firstOverDate) + (lastSafe ? " · último dia seguro " + shortDate(lastSafe) : "") }
       : simulation.affectedTrips.length > 0 ? { tone: "danger", text: "Afeta viagem futura", detail: firstAffected ? "A viagem de " + shortDate(firstAffected.trip.start) + " (" + firstAffected.trip.country + ") passaria a exceder em " + plural(firstAffected.excessDays, "dia", "dias") : undefined }
       : simulation.worsenedTrips.length > 0 ? { tone: "danger", text: "Piora viagem futura", detail: firstAffected ? "A viagem de " + shortDate(firstAffected.trip.start) + " (" + firstAffected.trip.country + ") já excede; piora em " + plural(firstAffected.excessDays, "dia", "dias") : undefined }
-      : { tone: simulation.firstWarningDate ? "warning" : "safe", text: "Dentro do limite", detail: "Pico de " + simulation.maxUsed + " de " + rule?.limit + " dias" })
-    : start && !end && forecast ? (lastSafe ? { tone: "safe", text: "Pode ficar até " + shortDate(lastSafe), detail: plural(forecast.daysAvailable, "dia disponível", "dias disponíveis") + (blocking ? " · limitado pela viagem de " + shortDate(blocking.start) : "") } : { tone: "danger", text: "Sem dias disponíveis", detail: blocking ? "Limitado pela viagem de " + shortDate(blocking.start) + " (" + blocking.country + ")" : rule ? "Todos os " + rule.limit + " dias da janela de " + rule.windowDays + " já estão em uso" : undefined })
+      : { tone: simulation.firstWarningDate ? "warning" : "safe", text: "Dentro do limite", detail: rule ? "Pico de " + usageLabel(rule, simulation.maxUsed, simulation.maxUsedDate) : undefined })
+    : start && !end && forecast ? (lastSafe ? { tone: "safe", text: "Pode ficar até " + shortDate(lastSafe), detail: plural(forecast.daysAvailable, "dia disponível", "dias disponíveis") + (blocking ? " · limitado pela viagem de " + shortDate(blocking.start) : "") } : { tone: "danger", text: "Sem dias disponíveis", detail: blocking ? "Limitado pela viagem de " + shortDate(blocking.start) + " (" + blocking.country + ")" : rule ? (isCalendarYear(rule) ? "Todos os " + limitOn(rule, start) + " dias de " + start.slice(0, 4) + " já estão em uso" : "Todos os " + rule.limit + " dias da janela de " + rule.windowDays + " já estão em uso") : undefined })
     : null;
   const adjustTo = !conflict && candidate && simulation && !simulation.safe && lastSafe && lastSafe >= candidate.start && lastSafe < candidate.end ? lastSafe : null;
 
@@ -230,15 +256,19 @@ export function CalendarPlanner({ trips, rules, today, initialRuleId, tripStatus
   }
   const closeChoice = useCallback(() => setChoice(null), []);
   function editChosenTrip() { if (!choice) return; setChoice(null); setConfirmed(null); onOpen(choice.trip); }
+  // The last day of a stay elsewhere is a travel day: a new stay in the selected country can start on it (the day counts for
+  // both). Any other day of a saved trip starts under that trip's rule, so extending or replanning it is not a conflict.
+  const switchesCountry = Boolean(choice && (ruleForTrip(rules, choice.trip)?.id ?? NO_RULE) !== selectedRuleId && choice.date === choice.trip.end && choice.trip.start < choice.trip.end);
   function startAtChosenDay() {
     if (!choice) return;
-    // Plan under the tapped trip's rule (or none), so extending or replanning it does not start as a conflict.
     const { trip } = choice;
-    const tripRule = ruleForTrip(rules, trip);
     setChoice(null);
     setConfirmed(null);
-    setRuleChoice(tripRule?.id ?? NO_RULE);
-    setCountry(trip.country || defaultCountry(tripRule));
+    if (!switchesCountry) {
+      const tripRule = ruleForTrip(rules, trip);
+      setRuleChoice(tripRule?.id ?? NO_RULE);
+      setCountry(trip.country || defaultCountry(tripRule));
+    }
     setStart(choice.date);
     setEnd(null);
   }
@@ -267,15 +297,11 @@ export function CalendarPlanner({ trips, rules, today, initialRuleId, tripStatus
           <button aria-pressed={!rule} className={(!rule ? "selected " : "") + "region-option other"} onClick={() => chooseRule(undefined)}>{NO_RULE_LABEL}</button>
         </div>
       </div>
-      {region === "other" && <div className="country-input"><label htmlFor="country-name">País</label><input id="country-name" placeholder="Ex: Tailândia" value={country} onChange={(event) => setCountry(event.target.value)} /></div>}
+      {region === "other" && <div className="country-input"><label htmlFor="country-name">País</label><input id="country-name" placeholder="Ex: Bahamas" value={country} onChange={(event) => setCountry(event.target.value)} /></div>}
       {start && <button className="button secondary planner-clear" onClick={clearSelection}>Limpar</button>}
     </div>
     <div className="region-status-cards">
-      {statuses.map((status) => <div key={status.rule.id} className={"status-card " + status.status + (status.rule.id === selectedRuleId ? " active" : "")}>
-        <div className="status-header">{status.rule.label} · hoje</div>
-        <div className="status-numbers"><strong>{status.used}<small> / {status.rule.limit}</small></strong></div>
-        <div className="status-label">{status.status === "over" ? "acima do limite" : status.remaining > 0 ? plural(status.remaining, "dia disponível", "dias disponíveis") : "limite atingido"}</div>
-      </div>)}
+      {rules.map((item) => <BudgetCard key={item.id} rule={item} trips={trips} today={today} active={item.id === selectedRuleId} />)}
     </div>
     {rule ? <EarliestEntry key={rule.id} rule={rule} trips={trips} today={today} onApply={applySelection} /> : !start && <div className="forecast-card neutral"><strong>Sem regra de limite</strong><small>Períodos sem regra são registrados para evitar sobreposição, mas não contam para nenhum limite.</small></div>}
     {!start && rule && <p className="planner-hint">Toque no dia de entrada para ver até quando pode ficar.</p>}
@@ -289,7 +315,7 @@ export function CalendarPlanner({ trips, rules, today, initialRuleId, tripStatus
       <button className="text-button" onClick={() => { const target = shiftMonth(firstMonth, -MONTH_STEP); setFirstMonth(target); setScrollTarget(firstMonth); }}>Meses anteriores</button>
     </div>
     <section className="annual-calendar" aria-label="Calendário de viagens">
-      {months.map((month) => <MonthCalendar key={month} month={month} today={today} dayStates={dayStates} selectedRegion={region} selectedLabel={placeLabel(rule, country)} tripLabel={(trip) => placeLabel(ruleForTrip(rules, trip), trip.country)} conflictIds={conflictIds} selectedStart={selectedStart} selectedEnd={selectedEnd} onDay={onDay} />)}
+      {months.map((month) => <MonthCalendar key={month} month={month} today={today} resetLabel={rule && isCalendarYear(rule) && month.slice(5, 7) === "01" ? rule.label + ": contagem zera" : undefined} dayStates={dayStates} selectedRegion={region} selectedLabel={placeLabel(rule, country)} tripLabel={(trip) => placeLabel(ruleForTrip(rules, trip), trip.country)} conflictIds={conflictIds} selectedStart={selectedStart} selectedEnd={selectedEnd} onDay={onDay} />)}
     </section>
     <button className="button secondary month-more" onClick={() => setLastMonth(shiftMonth(lastMonth, MONTH_STEP))}>Ver mais meses</button>
     <div className={"planner-footer" + (start ? " is-planning" : "")}>
@@ -320,11 +346,11 @@ export function CalendarPlanner({ trips, rules, today, initialRuleId, tripStatus
         </button>)}
       </div>
     </section>}
-    {choice && <DayChoiceSheet choice={choice} onEdit={editChosenTrip} onStart={startAtChosenDay} onClose={closeChoice} />}
+    {choice && <DayChoiceSheet choice={choice} startLabel={switchesCountry ? "Entrar em " + placeLabel(rule, country) + " neste dia" : "Começar entrada aqui"} onEdit={editChosenTrip} onStart={startAtChosenDay} onClose={closeChoice} />}
   </div>;
 }
 
-function MonthCalendar({ month, today, dayStates, selectedRegion, selectedLabel, tripLabel, conflictIds, selectedStart, selectedEnd, onDay }: { month: string; today: string; dayStates: Map<string, DayState>; selectedRegion: Region; selectedLabel: string; tripLabel: (trip: Trip) => string; conflictIds: Set<string>; selectedStart: string | null; selectedEnd: string | null; onDay: (date: string, trip?: Trip) => void }) {
+function MonthCalendar({ month, today, resetLabel, dayStates, selectedRegion, selectedLabel, tripLabel, conflictIds, selectedStart, selectedEnd, onDay }: { month: string; today: string; resetLabel?: string; dayStates: Map<string, DayState>; selectedRegion: Region; selectedLabel: string; tripLabel: (trip: Trip) => string; conflictIds: Set<string>; selectedStart: string | null; selectedEnd: string | null; onDay: (date: string, trip?: Trip) => void }) {
   const year = Number(month.slice(0, 4));
   const monthIndex = Number(month.slice(5, 7)) - 1;
   const numberOfDays = new Date(Date.UTC(year, monthIndex + 1, 0)).getUTCDate();
@@ -360,7 +386,7 @@ function MonthCalendar({ month, today, dayStates, selectedRegion, selectedLabel,
     return <button key={index} className={classes} aria-label={label} aria-pressed={selected} onClick={() => onDay(date, trip)}>{day}<span className="day-dot" />{conflict && <span className="conflict-mark" aria-hidden="true">!</span>}</button>;
   });
   return <section id={"month-" + month.slice(0, 7)} className="year-month">
-    <div className="year-month-header"><h3>{monthTitle(year, monthIndex)}</h3><span>{hasTrips ? "com registros" : ""}</span></div>
+    <div className="year-month-header"><h3>{monthTitle(year, monthIndex)}</h3>{resetLabel ? <span className="year-reset">{resetLabel}</span> : <span>{hasTrips ? "com registros" : ""}</span>}</div>
     <div className="year-weekdays">{WEEKDAYS.map((day) => <span key={day}>{day.slice(0, 1)}</span>)}</div>
     <div className="year-month-grid">{days}</div>
   </section>;

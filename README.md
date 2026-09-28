@@ -27,4 +27,4 @@ O histórico inicial foi migrado da planilha original para \`src/data/imported-t
 
 O MVP mantém o workspace no navegador e permite compartilhar um link com os dados no fragmento da URL. O fragmento não é enviado ao servidor, mas qualquer pessoa que possua o link poderá ler e alterar os dados.
 
-Os limites são configuráveis e servem como controle de permanência. O produto não determina residência fiscal, imigração ou obrigações tributárias.
+As regras do catálogo são Itália (dias de presença por ano civil: até 182, ou 183 em ano bissexto), Brasil (180 dias em 360) e, opcional, Schengen (90 em 180). O estado guardado tem um campo `version`; dados antigos são migrados ao serem lidos (estadias "Schengen" na Itália viram estadias na Itália). O produto conta dias e não determina residência fiscal, imigração ou obrigações tributárias.

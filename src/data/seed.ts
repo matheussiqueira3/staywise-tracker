@@ -1,5 +1,6 @@
 import importedTrips from "./imported-trips.json";
-import { DEFAULT_RULES } from "@/lib/rules";
-import type { TrackerState, Trip } from "@/lib/types";
-// Built-in region trips name their built-in rule (same id as the region); "other" trips stay rule-less.
-export const seedState: TrackerState = { trips: importedTrips.map((trip) => ({ ...trip, ...(trip.region !== "other" ? { ruleId: trip.region } : {}), region: trip.region as Trip["region"] })), rules: DEFAULT_RULES };
+import { normalizeState } from "@/lib/share";
+import type { TrackerState } from "@/lib/types";
+// The imported history goes through the same migration as stored data: built-in regions gain their rule ids and the
+// spreadsheet's non-Brazil days, recorded as Italy, become Italy trips.
+export const seedState: TrackerState = normalizeState({ trips: importedTrips, rules: [] })!;

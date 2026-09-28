@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Staywise · Controle de permanência",
-  description: "Controle e simulação de dias no Brasil e Schengen.",
+  description: "Calculadora de dias de presença por país: até quando você pode ficar na Itália e no Brasil.",
 };
 
 export default function RootLayout({

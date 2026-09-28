@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { seedState } from "@/data/seed";
 import { DEFAULT_RULES } from "./rules";
+import { STATE_VERSION } from "./share";
 import { MAX_WRITE_BYTES, chooseHydration, parseLocalMeta, parseStored, parseWriteBody, parseWriteRequest, readStored, resolveWrite } from "./sync";
 import type { TrackerState } from "./types";
 
@@ -67,6 +68,7 @@ test("readStored: valor ausente é vazio; valor que não passa na validação é
 test("parseStored/parseWriteRequest: estado com regra customizada e viagem 'Outro' sem regra faz o ciclo completo", () => {
   const custom = { id: "custom-th-1", label: "Tailândia", countryCode: "TH", region: "other" as const, limit: 60, windowDays: 180, warningAt: 45 };
   const state: TrackerState = {
+    version: STATE_VERSION,
     rules: [...DEFAULT_RULES, custom],
     trips: [
       { id: "t", ruleId: custom.id, region: "other", country: "Tailândia", start: "2026-03-01", end: "2026-03-10" },
