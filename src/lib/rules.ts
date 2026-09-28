@@ -472,3 +472,58 @@ export function tripStatuses(rules: Rule[], trips: Trip[]): Map<string, TripStat
   }
   return statuses;
 }
+
+/** One destination of a planned itinerary: where (a rule, or none for a country without a limit) and for how many days. */
+export type ItineraryLeg = { ruleId?: string; country: string; days: number };
+export type LegStatus = "safe" | "warning" | "over" | "affects" | "conflict" | "none";
+export type LegPlan = {
+  rule?: Rule;
+  country: string;
+  start: string;
+  end: string;
+  days: number;
+  /** Longest stay possible from this leg's start, given saved trips and the legs before it (null without a rule). */
+  maxDays: number | null;
+  lastSafeDate: string | null;
+  simulation: TripSimulation | null;
+  conflict?: Trip;
+  status: LegStatus;
+};
+
+/** Trip fields for a leg under `rule` (region "other" and no ruleId for a country without a limit). */
+function legTrip(rule: Rule | undefined, id: string, country: string, start: string, end: string): Trip {
+  return { id, ...(rule ? { ruleId: rule.id } : {}), region: rule ? rule.region : "other", country, start, end };
+}
+
+/**
+ * Lays out an itinerary starting on `start`: each leg begins on the day the previous one ends (the travel day counts for
+ * both places) and lasts `days` days. Each leg is judged like the next stop of a real trip: against saved trips (later ones
+ * protected) and the legs before it, so a problem shows on the leg that causes it. Its longest possible stay uses the same
+ * inputs. Conflicts are checked against saved trips and every other leg.
+ */
+export function planItinerary(rules: Rule[], trips: Trip[], start: string, legs: ItineraryLeg[]): LegPlan[] {
+  const laidOut: { rule?: Rule; country: string; start: string; end: string; days: number }[] = [];
+  let legStart = start;
+  for (const leg of legs) {
+    const days = Math.max(1, Math.floor(leg.days) || 1);
+    const rule = leg.ruleId ? rules.find((item) => item.id === leg.ruleId) : undefined;
+    const end = addDays(legStart, days - 1);
+    laidOut.push({ rule, country: leg.country, start: legStart, end, days });
+    legStart = end;
+  }
+  const asTrips = laidOut.map((leg, index) => legTrip(leg.rule, "leg-" + index, leg.country, leg.start, leg.end));
+  return laidOut.map((leg, index) => {
+    const others = trips.concat(asTrips.filter((_, other) => other !== index));
+    const conflict = findConflicts(others, asTrips[index]).otherRegion[0];
+    if (!leg.rule) return { ...leg, maxDays: null, lastSafeDate: null, simulation: null, conflict, status: conflict ? "conflict" : "none" };
+    const forecast = maxSafeStay(leg.rule, trips.concat(asTrips.slice(0, index)), leg.rule.region, leg.start);
+    const simulation = simulateTrip(leg.rule, trips.concat(asTrips.slice(0, index)), { ruleId: leg.rule.id, region: leg.rule.region, start: leg.start, end: leg.end });
+    const status: LegStatus = conflict ? "conflict" : simulation.firstOverDate ? "over" : !simulation.safe ? "affects" : simulation.firstWarningDate ? "warning" : "safe";
+    return { ...leg, maxDays: forecast.daysAvailable, lastSafeDate: forecast.lastSafeDate, simulation, conflict, status };
+  });
+}
+
+/** The saved trips an itinerary becomes. */
+export function itineraryTrips(plan: LegPlan[], idPrefix: string): Trip[] {
+  return plan.map((leg, index) => legTrip(leg.rule, idPrefix + "-" + index, leg.country.trim() || leg.rule?.label || "Outro", leg.start, leg.end));
+}

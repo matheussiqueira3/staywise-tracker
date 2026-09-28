@@ -6,14 +6,13 @@
 
 ## Primary Flow
 
-1. Choose a country or regime from the rule catalog (Itália, Brasil, a custom rule, or optional Schengen)
-2. Choose entry date
-3. Staywise automatically calculates:
-   - Last safe day
-   - Available days
-   - First day over limit (including saved later trips the stay would push over)
-4. User selects exit date
-5. Save trip
+1. "Planejar viagem" (first on the calendar tab): "how long can I stay in each place?"
+2. Build the itinerary as an ordered list of destinations (Itália, Brasil, or another country). Each starts on the day the previous one ends (the travel day counts for both) and opens at the longest stay possible there, counting saved trips and the earlier destinations in each rolling window.
+3. Adjust the days (−/+, number, slider, "Usar máximo"); each destination shows at once whether it fits, why not, and its maximum.
+4. Save: one trip per destination, undone together.
+5. The calendar scrolls to the new trips and shows them.
+
+The single-trip flow (country → tap entry day → last safe day → tap exit → save) stays on the calendar for quick checks.
 
 ## Design Principles
 

@@ -5,7 +5,8 @@ import { addDays, earliestEntryFor, findConflicts, formatDate, inclusiveDays, co
 import type { AffectedTrip, MaxSafeStay, TripSimulation, TripStatus } from "@/lib/rules";
 import type { Region, Rule, Trip } from "@/lib/types";
 
-type CalendarPlannerProps = { trips: Trip[]; rules: Rule[]; today: string; initialRuleId: string; tripStatus: Map<string, TripStatus>; onOpen: (trip: Trip) => void; onSave: (trip: Trip) => boolean };
+/** `focus`: a date to bring into view (a new object each time, e.g. after saving an itinerary). */
+type CalendarPlannerProps = { trips: Trip[]; rules: Rule[]; today: string; initialRuleId: string; tripStatus: Map<string, TripStatus>; focus?: { date: string }; onOpen: (trip: Trip) => void; onSave: (trip: Trip) => boolean; onPlan: () => void };
 /** `tripOver`: the day belongs to a saved trip that is over the limit on/after its first over day. */
 type DayState = { trip?: Trip; tripOver?: boolean; forecast?: "safe" | "warning" | "last" | "over" | "blocked" };
 type DayChoice = { date: string; trip: Trip };
@@ -196,7 +197,7 @@ function DayChoiceSheet({ choice, startLabel, onEdit, onStart, onClose }: { choi
   </div>;
 }
 
-export function CalendarPlanner({ trips, rules, today, initialRuleId, tripStatus, onOpen, onSave }: CalendarPlannerProps) {
+export function CalendarPlanner({ trips, rules, today, initialRuleId, tripStatus, focus, onOpen, onSave, onPlan }: CalendarPlannerProps) {
   const [ruleChoice, setRuleChoice] = useState(initialRuleId);
   const [country, setCountry] = useState(() => defaultCountry(ruleForChoice(rules, initialRuleId)));
   const [start, setStart] = useState<string | null>(null);
@@ -267,6 +268,7 @@ export function CalendarPlanner({ trips, rules, today, initialRuleId, tripStatus
     document.getElementById("month-" + scrollTarget.slice(0, 7))?.scrollIntoView({ behavior: "auto", block: "start" });
     setScrollTarget(null); // eslint-disable-line react-hooks/set-state-in-effect
   }, [scrollTarget]);
+  useEffect(() => { if (focus) showMonth(focus.date); }, [focus]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function chooseDay(date: string) {
     setConfirmedFor(null);
@@ -315,6 +317,7 @@ export function CalendarPlanner({ trips, rules, today, initialRuleId, tripStatus
   }
 
   return <div className="planner-shell">
+    <button className="plan-cta" onClick={onPlan}><span className="plan-cta-icon" aria-hidden="true">✈︎</span><span><strong>Planejar viagem</strong><small>Quanto tempo posso ficar em cada lugar?</small></span><b aria-hidden="true">→</b></button>
     <div className="planner-toolbar">
       <div className="planner-region">
         <span className="planner-label">País ou regime</span>
