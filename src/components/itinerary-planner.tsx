@@ -1,12 +1,13 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { addDays, dailyCounts, formatDate, itineraryTrips, planItinerary, ruleForTrip, usageLabel } from "@/lib/rules";
-import { MonthCalendar, type DayState } from "@/components/calendar-planner";
+import { addDays, dailyCounts, displayCountry, formatDate, inclusiveDays, itineraryTrips, planItinerary, ruleForTrip, usageLabel } from "@/lib/rules";
+import { HowItWorks, MonthCalendar, type DayState } from "@/components/calendar-planner";
 import type { ItineraryLeg, LegPlan } from "@/lib/rules";
 import type { Rule, Trip } from "@/lib/types";
 
-type Props = { rules: Rule[]; trips: Trip[]; today: string; onClose: () => void; onSave: (trips: Trip[]) => void };
+/** `initial`: an itinerary loaded from saved trips (`tripIds`), which saving replaces; `trips` must not include them. */
+type Props = { rules: Rule[]; trips: Trip[]; today: string; initial?: { start: string; legs: ItineraryLeg[]; tripIds: string[] }; onClose: () => void; onSave: (trips: Trip[], replaces: string[]) => void };
 const NO_RULE = "none";
 const DEFAULT_DAYS = 30;
 
@@ -59,16 +60,30 @@ function ItineraryCalendar({ rules, trips, plan, today }: { rules: Rule[]; trips
   </div>;
 }
 
+/** When a leg does not fit: the first arrival date that works, and two ways to arrive then. */
+function FitsFrom({ leg, previous, onStayLonger, onInsertStop }: { leg: LegPlan; previous?: LegPlan; onStayLonger: (date: string) => void; onInsertStop: (date: string) => void }) {
+  if (leg.fitsFrom === undefined || !leg.rule) return null;
+  if (leg.fitsFrom === null) return <p className="leg-fits">Nenhuma data nos próximos 2 anos comporta {plural(leg.days, "dia", "dias")} seguidos em {leg.rule.label}.</p>;
+  const date = leg.fitsFrom;
+  return <div className="leg-fits">
+    <p>Para ficar {plural(leg.days, "dia", "dias")} em {leg.rule.label}, chegue a partir de <strong>{longDate(date)}</strong> — os dias antigos já terão saído da conta.</p>
+    <div className="leg-fits-actions">
+      <button className="button secondary" onClick={() => onStayLonger(date)}>{previous ? "Ficar mais em " + (previous.rule?.label ?? (displayCountry(previous.country) || "Outro")) + " até " + shortDate(date) : "Começar em " + shortDate(date)}</button>
+      <button className="button secondary" onClick={() => onInsertStop(date)}>＋ Outro lugar até {shortDate(date)}</button>
+    </div>
+  </div>;
+}
+
 function Verdict({ leg }: { leg: LegPlan }) {
   const max = leg.maxDays !== null ? plural(leg.maxDays, "dia", "dias") : "";
-  if (leg.status === "conflict" && leg.conflict) return <p className="leg-verdict danger" role="status">Conflito com {leg.conflict.country} ({shortDate(leg.conflict.start)} — {shortDate(leg.conflict.end)}). Mude a data de saída ou os dias anteriores.</p>;
-  if (leg.status === "none") return <p className="leg-verdict neutral" role="status">Sem limite de dias para {leg.country || "este lugar"}. O período só evita sobreposição.</p>;
+  if (leg.status === "conflict" && leg.conflict) return <p className="leg-verdict danger" role="status">Conflito com {displayCountry(leg.conflict.country)} ({shortDate(leg.conflict.start)} — {shortDate(leg.conflict.end)}). Mude a data de saída ou os dias anteriores.</p>;
+  if (leg.status === "none") return <p className="leg-verdict neutral" role="status">Sem limite de dias para {displayCountry(leg.country) || "este lugar"}. O período só evita sobreposição.</p>;
   if (!leg.rule || !leg.simulation) return null;
-  if (leg.maxDays === 0) return <p className="leg-verdict danger" role="status">Sem dias disponíveis em {leg.rule.label} a partir de {shortDate(leg.start)}. Chegue mais tarde ou fique menos antes.</p>;
+  if (leg.maxDays === 0) return <p className="leg-verdict danger" role="status">Sem dias disponíveis em {leg.rule.label} a partir de {longDate(leg.start)}{leg.fitsFrom ? "" : ". Chegue mais tarde ou fique menos antes"}.</p>;
   if (leg.status === "over") return <p className="leg-verdict danger" role="status">Excede em {plural(leg.simulation.excessDays, "dia", "dias")}. O máximo aqui é {max} (até {shortDate(leg.lastSafeDate!)}).</p>;
   if (leg.status === "affects") {
     const later = leg.simulation.affectedTrips[0] ?? leg.simulation.worsenedTrips[0];
-    return <p className="leg-verdict danger" role="status">Faz a viagem de {later ? shortDate(later.trip.start) + " (" + later.trip.country + ")" : "depois"} passar do limite. O máximo aqui é {max}.</p>;
+    return <p className="leg-verdict danger" role="status">Faz a viagem de {later ? shortDate(later.trip.start) + " (" + displayCountry(later.trip.country) + ")" : "depois"} passar do limite. O máximo aqui é {max}.</p>;
   }
   return <p className={"leg-verdict " + (leg.status === "warning" ? "warning" : "safe")} role="status">✓ Dentro do limite · pico de {usageLabel(leg.rule, leg.simulation.maxUsed, leg.simulation.maxUsedDate)}.</p>;
 }
@@ -77,16 +92,17 @@ function Verdict({ leg }: { leg: LegPlan }) {
  * Plan a trip as a sequence of destinations: each starts on the day the previous one ends and shows at once the longest
  * possible stay there. All numbers come from planItinerary.
  */
-export function ItineraryPlanner({ rules, trips, today, onClose, onSave }: Props) {
-  const lastEnd = trips.reduce((latest, trip) => trip.end > latest ? trip.end : latest, "");
-  const [start, setStart] = useState(lastEnd >= today ? addDays(lastEnd, 1) : today);
-  const [legs, setLegs] = useState<ItineraryLeg[]>(() => {
-    // Start with the place the last saved trip was not in: the usual next stop.
-    const last = trips.slice().sort((a, b) => b.end.localeCompare(a.end))[0];
+export function ItineraryPlanner({ rules, trips, today, initial, onClose, onSave }: Props) {
+  // A new plan starts where the saved ones end, in the other place: on the travel day itself, which counts for both.
+  const [defaults] = useState(() => {
+    const last = trips.filter((trip) => trip.end >= today).sort((a, b) => b.end.localeCompare(a.end))[0];
     const lastRule = last ? ruleForTrip(rules, last) : undefined;
     const first = rules.find((rule) => rule.id !== lastRule?.id) ?? rules[0];
-    return [nextLeg(rules, trips, lastEnd >= today ? addDays(lastEnd, 1) : today, [], first?.id)];
+    const from = last ? last.end : today;
+    return { start: from, leg: nextLeg(rules, trips, from, [], first?.id) };
   });
+  const [start, setStart] = useState(initial?.start ?? defaults.start);
+  const [legs, setLegs] = useState<ItineraryLeg[]>(initial?.legs ?? [defaults.leg]);
   const [confirming, setConfirming] = useState(false);
   const sheetRef = useRef<HTMLElement>(null);
   const closeRef = useRef(onClose);
@@ -117,24 +133,36 @@ export function ItineraryPlanner({ rules, trips, today, onClose, onSave }: Props
     const next = rules.find((rule) => rule.id !== previous?.ruleId) ?? rules[0];
     setLegs((current) => current.concat(nextLeg(rules, trips, validStart, current, next?.id)));
   }
+  /** Arrive at leg `index` on `date` by staying longer in the leg before it (or starting later, for the first leg). */
+  function stayLonger(index: number, date: string) {
+    const extra = inclusiveDays(plan[index].start, date) - 1;
+    if (index === 0) { setConfirming(false); setStart(date); return; }
+    update(index - 1, { days: legs[index - 1].days + extra });
+  }
+  /** Arrive at leg `index` on `date` through a stop without a day limit (e.g. home in the Bahamas). */
+  function insertStop(index: number, date: string) {
+    setConfirming(false);
+    const stop = { country: "Bahamas", days: inclusiveDays(plan[index].start, date) };
+    setLegs((current) => current.slice(0, index).concat(stop, current.slice(index)));
+  }
   function removeLeg(index: number) { setConfirming(false); setLegs((current) => current.filter((_, other) => other !== index)); }
   function save() {
     if (blocked) return;
     if (risky && !confirming) { setConfirming(true); return; }
-    onSave(itineraryTrips(plan, "trip-" + Date.now()));
+    onSave(itineraryTrips(plan, "trip-" + Date.now()), initial?.tripIds ?? []);
   }
 
   return <div className="modal-backdrop itinerary-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
     <section ref={sheetRef} className="modal itinerary-sheet" role="dialog" aria-modal="true" aria-labelledby="itinerary-title">
       <div className="modal-header">
-        <div><p className="eyebrow">PLANEJAR VIAGEM</p><h2 id="itinerary-title">Quanto tempo posso ficar em cada lugar?</h2></div>
+        <div><p className="eyebrow">{initial ? "EDITAR ITINERÁRIO" : "PLANEJAR VIAGEM"}</p><h2 id="itinerary-title">Quanto tempo posso ficar em cada lugar?</h2></div>
         <button className="circle-button" onClick={onClose} aria-label="Fechar">×</button>
       </div>
-      <p className="itinerary-intro">Monte os destinos na ordem. Cada um começa no dia em que o anterior termina e já vem com o máximo possível — ajuste os dias e veja na hora se cabe.</p>
+      <p className="itinerary-intro">{initial ? "Este é o seu plano à frente. Ajuste os dias; ao salvar, ele substitui as viagens originais." : "Monte os destinos na ordem. Cada um começa no dia em que o anterior termina (o dia da viagem conta nos dois) e já vem com o máximo possível — ajuste os dias e veja na hora se cabe."}</p>
       <label className="itinerary-start"><span>Começa em</span><input type="date" value={start} onChange={(event) => { setConfirming(false); setStart(event.target.value); }} /></label>
 
       {plan.length > 1 && <div className="itinerary-timeline" aria-hidden="true">
-        {plan.map((leg, index) => <span key={index} className={"timeline-part " + (leg.rule?.region ?? "other") + (leg.status === "over" || leg.status === "affects" || leg.status === "conflict" ? " danger" : "")} style={{ flexGrow: leg.days }}>{leg.rule?.label ?? (leg.country || "Outro")} · {leg.days}</span>)}
+        {plan.map((leg, index) => <span key={index} className={"timeline-part " + (leg.rule?.region ?? "other") + (leg.status === "over" || leg.status === "affects" || leg.status === "conflict" ? " danger" : "")} style={{ flexGrow: leg.days }}>{leg.rule?.label ?? (displayCountry(leg.country) || "Outro")} · {leg.days}</span>)}
       </div>}
 
       <ol className="leg-list">
@@ -160,10 +188,15 @@ export function ItineraryPlanner({ rules, trips, today, onClose, onSave }: Props
             <input className="leg-slider" type="range" min="1" max={sliderMax} value={Math.min(input.days, sliderMax)} onChange={(event) => setDays(index, Number(event.target.value))} aria-label={"Ajustar dias no destino " + (index + 1)} />
             {leg.maxDays !== null && leg.maxDays > 0 && <div className="leg-max"><span>Máximo possível: <strong>{plural(leg.maxDays, "dia", "dias")}</strong> (até {shortDate(leg.lastSafeDate!)})</span>{input.days !== leg.maxDays && <button className="text-button" onClick={() => setDays(index, leg.maxDays!)}>Usar máximo</button>}</div>}
             <Verdict leg={leg} />
+            <FitsFrom leg={leg} previous={plan[index - 1]} onStayLonger={(date) => stayLonger(index, date)} onInsertStop={(date) => insertStop(index, date)} />
           </li>;
         })}
       </ol>
       <button className="button secondary itinerary-add" onClick={addLeg}>＋ Adicionar destino</button>
+      <details className="itinerary-preview">
+        <summary>Como a conta funciona</summary>
+        {rules.filter((rule) => legs.some((leg) => leg.ruleId === rule.id)).map((rule) => <HowItWorks key={rule.id} rule={rule} trips={trips} today={today} />)}
+      </details>
       <details className="itinerary-preview">
         <summary>Ver no calendário</summary>
         <p>Cada dia mostra a conta daquele dia: quantos dias no país dentro da janela (Itália 180, Brasil 360). Vermelho passa do limite.</p>

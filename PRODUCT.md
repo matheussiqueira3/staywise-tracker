@@ -6,10 +6,10 @@
 
 ## Primary Flow
 
-1. "Planejar viagem" (first on the calendar tab): "how long can I stay in each place?"
+1. "Planejar viagem" (the first action on the home screen): "how long can I stay in each place?". "Editar o plano à frente" reopens the saved plan ahead (the trip not yet over and those that follow it without a gap) as an itinerary.
 2. Build the itinerary as an ordered list of destinations (Itália, Brasil, or another country). Each starts on the day the previous one ends (the travel day counts for both) and opens at the longest stay possible there, counting saved trips and the earlier destinations in each rolling window.
-3. Adjust the days (−/+, number, slider, "Usar máximo"); each destination shows at once whether it fits, why not, and its maximum.
-4. Save: one trip per destination, undone together.
+3. Adjust the days (−/+, number, slider, "Usar máximo"); each destination shows at once whether it fits, why not, and its maximum. When it does not fit, it says from which arrival date it would ("chegue a partir de 22 set") and offers to get there by staying longer in the previous place or inserting a stop without a limit (e.g. the Bahamas).
+4. Save: one trip per destination, undone together (an edited itinerary replaces the trips it was loaded from).
 5. The calendar scrolls to the new trips and shows them.
 
 The single-trip flow (country → tap entry day → last safe day → tap exit → save) stays on the calendar for quick checks.
@@ -20,7 +20,8 @@ The single-trip flow (country → tap entry day → last safe day → tap exit �
 - **No explicit planning mode.** Selection is immediate.
 - **Calendar browsing is unbounded.** Navigate freely to any month; the counting period remains bounded by each rule (Itália 180 days; Brasil 360 days; Schengen 180 days).
 - **Future first.** The main job is a calculator for the days ahead. Past trips are inputs that make future answers correct, not a dashboard.
-- **Travel days count for both places.** Entry and exit days count; one trip may end on the day the next one (in another country) starts, and that day counts for both.
+- **Travel days count for both places.** Entry and exit days count; one trip may end on the day the next one (in another country) starts, and that day counts for both. New plans use this rule (a destination starts on the day the previous one ends); older records that start the next day are kept as they are.
+- **Installable.** The app has a web manifest and icons, so it can be added to the phone's home screen.
 - **Business logic is separate.** `src/lib` contains all calculations; UI never re-derives stay status.
 - **Exactly at limit is allowed.** Only `> limit` is over; `== limit` is OK.
 - **Evaluate every day.** Not just entry + exit.

@@ -26,7 +26,7 @@
 @media(max-width:700px){.date-fields{grid-template-columns:1fr}.date-fields .field-group{margin-bottom:14px}.modal{max-width:100%;overflow-x:hidden}.modal-actions{gap:8px}}
 .region-status-cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:14px 0}.status-card{border:1px solid var(--line);border-radius:13px;background:#fff;padding:12px 14px}.status-card.active{border-color:var(--teal);box-shadow:inset 0 0 0 1px var(--teal)}.status-header{color:var(--muted);font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.04em}.status-numbers strong{font-size:22px;letter-spacing:-.04em}.status-numbers small{color:var(--muted);font-size:13px;font-weight:600}.status-label{color:var(--muted);font-size:11px}.status-card.warning .status-numbers{color:var(--amber)}.status-card.over .status-numbers,.status-card.over .status-label{color:var(--red)}
 .forecast-card{display:grid;gap:4px;border:1px solid #b8decf;background:#eff9f5;border-radius:13px;padding:13px 15px;margin-bottom:14px}.forecast-card strong{font-size:15px;letter-spacing:-.02em}.forecast-card small{color:var(--muted);font-size:12px;line-height:1.45}.forecast-region{color:var(--teal-dark);font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.04em}.forecast-date{color:var(--teal-dark)}.forecast-card.warning{border-color:#f2d5ad;background:var(--amber-bg)}.forecast-card.danger{border-color:#efc2bc;background:#fff1ef}.forecast-card.danger strong,.forecast-card.danger .forecast-region{color:#8d3332}.forecast-card.neutral{border-color:var(--line);background:#fff}.forecast-affected{color:#8d3332!important}.forecast-action{justify-self:start;margin-top:6px}
-.planner-hint{margin:0 0 12px;color:var(--muted);font-size:12px}.earliest-entry{display:flex;flex-wrap:wrap;align-items:center;gap:8px;border:1px solid var(--line);border-radius:13px;background:#fff;padding:11px 14px;margin-bottom:10px;font-size:13px}.earliest-entry label{font-weight:800}.earliest-entry input{width:68px;min-height:36px;border:1px solid var(--line);border-radius:9px;padding:0 9px;font:inherit}.earliest-entry p{flex-basis:100%;margin:2px 0 0;font-size:12px;color:var(--muted)}.earliest-entry p strong{color:var(--ink)}
+.planner-hint{margin:0 0 12px;color:var(--muted);font-size:12px}
 .country-input{display:grid;gap:5px;font-size:12px;font-weight:800}.country-input input{min-height:40px;border:1px solid var(--line);border-radius:10px;padding:0 11px;font:inherit}.month-more{display:block;width:100%;margin:12px 0}
 .next-trip-card{display:grid;gap:6px;width:100%;text-align:left;border:1px solid var(--line);border-radius:14px;background:#fff;padding:14px 17px;margin-bottom:14px;color:var(--ink);font:inherit;cursor:pointer}.next-trip-card.now{border-color:var(--teal)}.next-trip-card.danger{border-color:#efc2bc}.next-trip-card .trip-header{display:flex;justify-content:space-between;gap:10px;align-items:baseline}.next-trip-card .trip-header small{color:var(--muted);font-size:12px}.next-trip-card .trip-dates{font-size:14px}.trip-alert{display:grid;gap:2px;border-radius:9px;padding:8px 10px;font-size:12px}.trip-alert small{font-size:11px}.trip-alert.danger{background:var(--red-bg);color:#8d3332}.trip-alert.warning{background:var(--amber-bg);color:#784713}.trip-alert.safe{background:#eff9f5;color:var(--teal-dark)}
 .field-forecast{font-size:12px;border-radius:8px;padding:9px 11px;margin:0}.field-forecast.safe{background:#eff9f5;color:var(--teal-dark)}.field-forecast.danger{background:var(--red-bg);color:var(--red)}
@@ -39,7 +39,6 @@
 .annual-day.trip-over::after{content:"";position:absolute;inset:2px;border:2px solid var(--red);border-radius:7px;pointer-events:none}
 .annual-day.forecast-warning{background:var(--amber-bg);color:#784713}
 .forecast-warning-line{color:#784713!important}
-.earliest-from{display:inline-flex;flex-wrap:wrap;align-items:center;gap:8px;min-width:0}.earliest-from label{font-weight:600}.earliest-entry .earliest-from input{width:auto;max-width:100%;min-width:0}
 .button.primary.danger{background:var(--red)}.button.primary.danger:hover{background:#963c3a}
 .choice-backdrop{position:fixed;inset:0;z-index:30;display:grid;place-items:center;padding:20px;background:rgba(23,37,43,.48)}
 .choice-sheet{width:min(380px,100%);background:#fff;border-radius:18px;padding:20px;box-shadow:0 24px 70px rgba(15,36,38,.22)}.choice-sheet .eyebrow{margin:0 0 4px}.choice-sheet h3{margin:0;font-size:18px;letter-spacing:-.03em}.choice-detail{margin:6px 0 16px;color:var(--muted);font-size:12px}
@@ -55,9 +54,6 @@
 .footer-detail{display:block;margin-top:2px;color:var(--muted);font-weight:600;line-height:1.4}
 .planner-footer .footer-actions{display:flex;gap:8px;align-items:center}
 @media(max-width:700px){.footer-actions .button{flex:1;min-height:44px}}
-/* "Quando posso ficar N dias?" stays folded until asked for, so the calendar starts higher */
-.earliest-entry{display:block}.earliest-entry summary{cursor:pointer;font-weight:800;min-height:24px;display:flex;align-items:center}
-.earliest-body{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:10px}
 .month-jump-row .text-button{white-space:nowrap}
 /* Toasts sit under the top bar so they never cover the sticky footer or the tab bar */
 .toast{top:calc(84px + env(safe-area-inset-top));bottom:auto}
@@ -125,3 +121,9 @@
 .itinerary-preview p{color:var(--muted);font-size:12px;margin:8px 0}
 .itinerary-months{grid-template-columns:1fr!important;gap:10px}
 @media(max-width:700px){.count-legend{flex-direction:column;align-items:stretch}.count-toggle{width:100%}}
+/* Planner: when a destination does not fit, when it would, and how to get there */
+.leg-fits{display:grid;gap:8px;font-size:12px;color:var(--ink);line-height:1.45}.leg-fits p{margin:0}
+.leg-fits-actions{display:flex;flex-wrap:wrap;gap:8px}.leg-fits-actions .button{flex:1;min-height:40px;font-size:12px}
+.itinerary-preview .how-it-works{margin:8px 0 0}
+.plan-edit{display:flex;margin:-6px 0 12px auto}
+.section-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}

@@ -503,6 +503,8 @@ export type LegPlan = {
   simulation: TripSimulation | null;
   conflict?: Trip;
   status: LegStatus;
+  /** When the leg does not fit: the first arrival date from which all its days fit (null when none within two years). */
+  fitsFrom?: string | null;
 };
 
 /** Trip fields for a leg under `rule` (region "other" and no ruleId for a country without a limit). */
@@ -534,9 +536,47 @@ export function planItinerary(rules: Rule[], trips: Trip[], start: string, legs:
     const forecast = maxSafeStay(leg.rule, trips.concat(asTrips.slice(0, index)), leg.rule.region, leg.start);
     const simulation = simulateTrip(leg.rule, trips.concat(asTrips.slice(0, index)), { ruleId: leg.rule.id, region: leg.rule.region, start: leg.start, end: leg.end });
     const status: LegStatus = conflict ? "conflict" : simulation.firstOverDate ? "over" : !simulation.safe ? "affects" : simulation.firstWarningDate ? "warning" : "safe";
-    return { ...leg, maxDays: forecast.daysAvailable, lastSafeDate: forecast.lastSafeDate, simulation, conflict, status };
+    const fitsFrom = status === "over" || status === "affects" ? earliestFit(leg.rule, trips.concat(asTrips.slice(0, index)), leg.days, leg.start) : undefined;
+    return { ...leg, maxDays: forecast.daysAvailable, lastSafeDate: forecast.lastSafeDate, simulation, conflict, status, fitsFrom };
   });
 }
+
+const FIT_SEARCH_DAYS = 730;
+/** First start on or after `from` where a stay of `days` under `rule` is safe (itself and later saved trips), or null. */
+function earliestFit(rule: Rule, trips: Trip[], days: number, from: string): string | null {
+  const safeRule = sanitizeRule(rule);
+  if (days > maxStayLength(safeRule)) return null;
+  for (let offset = 1; offset <= FIT_SEARCH_DAYS; offset++) {
+    const start = addDays(from, offset);
+    if (simulate(safeRule, trips, { ruleId: safeRule.id, region: safeRule.region, start, end: addDays(start, days - 1) }, true).safe) return start;
+  }
+  return null;
+}
+
+/**
+ * The saved plan ahead as an itinerary to edit: the first trip not yet over and the trips that follow it without a gap
+ * (starting on its last day or the day after). Arrival dates are kept; each leg runs until the next arrival, so the day of
+ * departure counts for the place being left (the travel-day rule).
+ */
+export function itineraryFromTrips(rules: Rule[], trips: Trip[], today: string): { start: string; legs: ItineraryLeg[]; tripIds: string[] } | null {
+  const ahead = trips.filter((trip) => trip.end >= today && trip.start <= trip.end).sort((a, b) => a.start.localeCompare(b.start) || a.end.localeCompare(b.end));
+  if (ahead.length === 0) return null;
+  const chain = [ahead[0]];
+  for (const trip of ahead.slice(1)) {
+    const last = chain[chain.length - 1];
+    if (trip.start < last.end || trip.start > addDays(last.end, 1)) break;
+    chain.push(trip);
+  }
+  const legs = chain.map((trip, index) => {
+    const next = chain[index + 1];
+    return { ruleId: ruleForTrip(rules, trip)?.id, country: trip.country, days: inclusiveDays(trip.start, next ? next.start : trip.end) };
+  });
+  return { start: chain[0].start, legs, tripIds: chain.map((trip) => trip.id) };
+}
+
+const COUNTRY_NAMES: Record<string, string> = { italy: "Itália", italia: "Itália", brazil: "Brasil", bahamas: "Bahamas", other: "Outro" };
+/** Country name as shown in the (Portuguese) interface; stored names are kept as typed. */
+export function displayCountry(country: string): string { return COUNTRY_NAMES[country.trim().toLowerCase()] ?? country; }
 
 /** The saved trips an itinerary becomes. */
 export function itineraryTrips(plan: LegPlan[], idPrefix: string): Trip[] {

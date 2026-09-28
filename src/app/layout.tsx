@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 
@@ -15,7 +15,10 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Staywise · Controle de permanência",
   description: "Calculadora de dias de presença por país: até quando você pode ficar na Itália e no Brasil.",
+  appleWebApp: { capable: true, title: "Staywise", statusBarStyle: "default" },
 };
+
+export const viewport: Viewport = { themeColor: "#177f78" };
 
 export default function RootLayout({
   children,
