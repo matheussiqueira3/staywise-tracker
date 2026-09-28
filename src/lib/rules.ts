@@ -60,6 +60,25 @@ export function isoToday(now: Date = new Date()): string {
 /** The limit rule for a region, or undefined when the region has no rule (e.g. "other"). */
 export function ruleForRegion(rules: Rule[], region: Region): Rule | undefined { return rules.find((rule) => rule.region === region); }
 
+/** Built-in rules (Brasil, Schengen) carry legal limits from the catalog; only their alert threshold is a preference. */
+export function isBuiltInRule(rule: Pick<Rule, "region">): boolean { return rule.region !== "other"; }
+export type RuleNumbers = Pick<Rule, "limit" | "windowDays" | "warningAt">;
+export type RuleNumbersInput = { limit: string; windowDays: string; warningAt: string };
+/**
+ * Validates rule numbers typed by the user. Rejects instead of clamping, so a half-typed value never becomes a limit.
+ * An empty alert means 0 (never warn before the limit).
+ */
+export function parseRuleNumbers(input: RuleNumbersInput): { ok: true; value: RuleNumbers } | { ok: false; error: string } {
+  const read = (value: string) => /^\d+$/.test(value.trim()) ? Number(value.trim()) : NaN;
+  const limit = read(input.limit);
+  const windowDays = read(input.windowDays);
+  const warningAt = input.warningAt.trim() === "" ? 0 : read(input.warningAt);
+  if (!(limit >= 1 && limit <= MAX_RULE_DAYS)) return { ok: false, error: "O limite precisa ser um número inteiro entre 1 e " + MAX_RULE_DAYS + "." };
+  if (!(windowDays >= limit && windowDays <= MAX_RULE_DAYS)) return { ok: false, error: "A janela precisa ser um número inteiro maior ou igual ao limite." };
+  if (!(warningAt >= 0 && warningAt <= limit)) return { ok: false, error: "O alerta precisa ser um número inteiro entre 0 e o limite." };
+  return { ok: true, value: { limit, windowDays, warningAt } };
+}
+
 export type TripAnalysis = {
   safe: boolean;
   firstWarningDate?: string;

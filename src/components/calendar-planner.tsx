@@ -17,7 +17,7 @@ const MONTH_STEP = 12;
 const OVER_PREVIEW_DAYS = 14;
 
 function keyFor(year: number, month: number, day: number) { return year + "-" + String(month + 1).padStart(2, "0") + "-" + String(day).padStart(2, "0"); }
-function monthTitle(year: number, month: number) { return new Intl.DateTimeFormat("pt-BR", { month: "long", year: "numeric", timeZone: "UTC" }).format(new Date(Date.UTC(year, month, 1))); }
+function monthTitle(year: number, month: number) { const title = new Intl.DateTimeFormat("pt-BR", { month: "long", year: "numeric", timeZone: "UTC" }).format(new Date(Date.UTC(year, month, 1))); return title.charAt(0).toUpperCase() + title.slice(1); }
 function monthKey(value: string) { return value.slice(0, 7) + "-01"; }
 function shiftMonth(value: string, amount: number) { const date = new Date(value + "T12:00:00Z"); date.setUTCDate(1); date.setUTCMonth(date.getUTCMonth() + amount); return date.toISOString().slice(0, 10); }
 function monthsBetween(start: string, end: string) { const months: string[] = []; for (let month = monthKey(start); month <= monthKey(end); month = shiftMonth(month, 1)) months.push(month); return months; }
@@ -99,13 +99,16 @@ function EarliestEntry({ rule, trips, today, onApply }: { rule: Rule; trips: Tri
   const days = Math.floor(Number(length));
   const valid = length !== "" && days >= 1;
   const result = useMemo(() => valid ? earliestEntryFor(rule, trips, days, from) : null, [valid, rule, trips, days, from]);
-  return <div className="earliest-entry">
+  return <details className="earliest-entry">
+    <summary>Quando posso ficar N dias em {rule.label}?</summary>
+    <div className="earliest-body">
     <label htmlFor="earliest-length">Quero ficar</label>
     <input id="earliest-length" type="number" inputMode="numeric" min="1" max={rule.limit} placeholder="30" value={length} onChange={(event) => setLength(event.target.value)} />
     <span>dias em {rule.label}</span>
     <span className="earliest-from"><label htmlFor="earliest-from">a partir de</label><input id="earliest-from" type="date" value={fromInput} onChange={(event) => setFromInput(event.target.value)} /></span>
     {valid && <p role="status">{days > rule.limit ? "Acima do limite de " + rule.limit + " dias." : result ? <>Primeira entrada possível em ou após {longDate(from)}: <strong>{longDate(result.start)}</strong> <button className="text-button" onClick={() => onApply(result.start, result.end)}>Ver no calendário</button></> : "Nenhuma data possível nos 2 anos a partir de " + longDate(from) + "."}</p>}
-  </div>;
+    </div>
+  </details>;
 }
 
 function DayChoiceSheet({ choice, onEdit, onStart, onClose }: { choice: DayChoice; onEdit: () => void; onStart: () => void; onClose: () => void }) {
@@ -173,13 +176,18 @@ export function CalendarPlanner({ trips, rules, today, initialRuleId, tripStatus
   const needsConfirm = Boolean(candidate && simulation && !simulation.safe && candidate.end >= today);
   const confirming = needsConfirm && confirmed !== null && confirmed.key === candidateKey && confirmed.trips === trips && confirmed.rules === rules;
   // Short verdict repeated in the sticky footer, so the answer stays visible while scrolling the calendar.
-  const verdict = conflict ? { tone: "danger", text: "Conflito com " + conflict.country }
-    : simulation ? (simulation.firstOverDate ? { tone: "danger", text: "Excede em " + plural(simulation.excessDays, "dia", "dias") }
-      : simulation.affectedTrips.length > 0 ? { tone: "danger", text: "Afeta viagem futura" }
-      : simulation.worsenedTrips.length > 0 ? { tone: "danger", text: "Piora viagem futura" }
-      : { tone: simulation.firstWarningDate ? "warning" : "safe", text: "Dentro do limite" })
-    : start && !end && forecast ? (forecast.lastSafeDate ? { tone: "safe", text: "Pode ficar até " + shortDate(forecast.lastSafeDate) } : { tone: "danger", text: "Sem dias disponíveis" })
+  // It carries the full answer (why, and the one-tap fix) because the detailed card above can be scrolled out of view.
+  const lastSafe = forecast?.lastSafeDate;
+  const firstAffected = simulation?.affectedTrips[0] ?? simulation?.worsenedTrips[0];
+  const blocking = forecast?.limitedBy === "later-trip" ? forecast.blockingTrip?.trip : undefined;
+  const verdict: { tone: string; text: string; detail?: string } | null = conflict ? { tone: "danger", text: "Conflito com " + conflict.country }
+    : simulation ? (simulation.firstOverDate ? { tone: "danger", text: "Excede em " + plural(simulation.excessDays, "dia", "dias"), detail: "Passa do limite em " + shortDate(simulation.firstOverDate) + (lastSafe ? " · último dia seguro " + shortDate(lastSafe) : "") }
+      : simulation.affectedTrips.length > 0 ? { tone: "danger", text: "Afeta viagem futura", detail: firstAffected ? "A viagem de " + shortDate(firstAffected.trip.start) + " (" + firstAffected.trip.country + ") passaria a exceder em " + plural(firstAffected.excessDays, "dia", "dias") : undefined }
+      : simulation.worsenedTrips.length > 0 ? { tone: "danger", text: "Piora viagem futura", detail: firstAffected ? "A viagem de " + shortDate(firstAffected.trip.start) + " (" + firstAffected.trip.country + ") já excede; piora em " + plural(firstAffected.excessDays, "dia", "dias") : undefined }
+      : { tone: simulation.firstWarningDate ? "warning" : "safe", text: "Dentro do limite", detail: "Pico de " + simulation.maxUsed + " de " + rule?.limit + " dias" })
+    : start && !end && forecast ? (lastSafe ? { tone: "safe", text: "Pode ficar até " + shortDate(lastSafe), detail: plural(forecast.daysAvailable, "dia disponível", "dias disponíveis") + (blocking ? " · limitado pela viagem de " + shortDate(blocking.start) : "") } : { tone: "danger", text: "Sem dias disponíveis", detail: blocking ? "Limitado pela viagem de " + shortDate(blocking.start) + " (" + blocking.country + ")" : rule ? "Todos os " + rule.limit + " dias da janela de " + rule.windowDays + " já estão em uso" : undefined })
     : null;
+  const adjustTo = !conflict && candidate && simulation && !simulation.safe && lastSafe && lastSafe >= candidate.start && lastSafe < candidate.end ? lastSafe : null;
 
   const dayStates = useMemo(() => {
     const states = new Map<string, DayState>();
@@ -278,8 +286,8 @@ export function CalendarPlanner({ trips, rules, today, initialRuleId, tripStatus
       <label htmlFor="month-jump">Ir para</label>
       <input type="month" id="month-jump" value={firstMonth.slice(0, 7)} onChange={(event) => event.target.value && showMonth(event.target.value + "-01")} />
       <button className="text-button" onClick={() => showMonth(today)}>Hoje</button>
+      <button className="text-button" onClick={() => { const target = shiftMonth(firstMonth, -MONTH_STEP); setFirstMonth(target); setScrollTarget(firstMonth); }}>Meses anteriores</button>
     </div>
-    <button className="button secondary month-more" onClick={() => { const target = shiftMonth(firstMonth, -MONTH_STEP); setFirstMonth(target); setScrollTarget(firstMonth); }}>Ver meses anteriores</button>
     <section className="annual-calendar" aria-label="Calendário de viagens">
       {months.map((month) => <MonthCalendar key={month} month={month} today={today} dayStates={dayStates} selectedRegion={region} selectedLabel={placeLabel(rule, country)} tripLabel={(trip) => placeLabel(ruleForTrip(rules, trip), trip.country)} conflictIds={conflictIds} selectedStart={selectedStart} selectedEnd={selectedEnd} onDay={onDay} />)}
     </section>
@@ -288,9 +296,12 @@ export function CalendarPlanner({ trips, rules, today, initialRuleId, tripStatus
       <div>
         <span className="planner-label">Período</span>
         <strong>{candidate ? shortDate(candidate.start) + " — " + shortDate(candidate.end) + " · " + plural(selectedDays, "dia", "dias") : start ? "Entrada " + shortDate(start) + " — escolha a saída" : "—"}</strong>
-        {verdict && <small className={"footer-verdict " + verdict.tone} role="status">{verdict.text}</small>}
+        {verdict && <small className={"footer-verdict " + verdict.tone} role="status">{verdict.text}{verdict.detail && <span className="footer-detail">{verdict.detail}</span>}</small>}
       </div>
-      <button className={"button primary" + (confirming ? " danger" : "")} onClick={saveSelection} disabled={!candidate || Boolean(conflict)}>{confirming ? "Salvar mesmo assim" : "Salvar"}</button>
+      <div className="footer-actions">
+        {adjustTo && <button className="button secondary" onClick={() => adjustEnd(adjustTo)}>Sair em {shortDate(adjustTo)}</button>}
+        <button className={"button primary" + (confirming ? " danger" : "")} onClick={saveSelection} disabled={!candidate || Boolean(conflict)}>{confirming ? "Salvar mesmo assim" : "Salvar"}</button>
+      </div>
     </div>
     {trips.length > 0 && <section className="list-section planner-existing">
       <div className="section-heading small">

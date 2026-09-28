@@ -48,3 +48,19 @@
 .now-limit-reason{color:var(--muted);font-size:12px;line-height:1.45}
 /* Rule picker: one option per rule plus "Outro (sem regra)"; wraps into rows instead of scrolling sideways */
 .planner-region{min-width:0;flex:1}.planner-toolbar .segmented.rule-picker{grid-template-columns:repeat(auto-fit,minmax(92px,1fr));max-width:100%}.segmented.rule-picker button{min-width:0;padding:6px 8px;line-height:1.2;overflow-wrap:anywhere}
+/* Sticky footer carries the full answer and the one-tap fix */
+.footer-detail{display:block;margin-top:2px;color:var(--muted);font-weight:600;line-height:1.4}
+.planner-footer .footer-actions{display:flex;gap:8px;align-items:center}
+@media(max-width:700px){.footer-actions .button{flex:1;min-height:44px}}
+/* "Quando posso ficar N dias?" stays folded until asked for, so the calendar starts higher */
+.earliest-entry{display:block}.earliest-entry summary{cursor:pointer;font-weight:800;min-height:24px;display:flex;align-items:center}
+.earliest-body{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:10px}
+.month-jump-row .text-button{white-space:nowrap}
+/* Toasts sit under the top bar so they never cover the sticky footer or the tab bar */
+.toast{top:calc(84px + env(safe-area-inset-top));bottom:auto}
+@media(max-width:700px){.toast{top:calc(72px + env(safe-area-inset-top));bottom:auto}
+.content-wrap{padding-top:16px}.welcome{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}
+.welcome .eyebrow,.welcome-copy{display:none}.welcome h1{font-size:26px;margin:0}.today-chip{margin-top:0;padding:8px 12px;white-space:nowrap}
+.region-status-cards{margin:10px 0}.status-card{padding:9px 12px}}
+/* Rule editing: explicit save, errors on their own line */
+.rule-setting{flex-wrap:wrap}.rule-setting>.field-error{flex-basis:100%;margin:0}.rule-drift .text-button{padding:0 0 0 6px}

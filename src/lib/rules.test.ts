@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { DEFAULT_RULES, addDays, analyzeTrip, currentTrip, daysInWindow, earliestEntryFor, findConflicts, formatDate, formatFullDate, inclusiveDays, isoToday, maxSafeStay, parseDate, ruleForTrip, simulateTrip, statusFor, tripMatchesRule, tripStatuses, upcomingTrips } from "./rules";
+import { DEFAULT_RULES, addDays, analyzeTrip, currentTrip, daysInWindow, earliestEntryFor, findConflicts, formatDate, formatFullDate, inclusiveDays, isBuiltInRule, isoToday, maxSafeStay, parseDate, parseRuleNumbers, ruleForTrip, simulateTrip, statusFor, tripMatchesRule, tripStatuses, upcomingTrips } from "./rules";
 import { decodeState, encodeState, normalizeState } from "./share";
 import type { Rule } from "./types";
 import type { Trip } from "./types";
@@ -798,4 +798,26 @@ test("estado produzido pelo app sobrevive a normalizeState e ao link de comparti
   const legacy = normalizeState({ rules: DEFAULT_RULES, trips: [{ id: "l", region: "schengen", country: "Italy", start: "2026-01-01", end: "2026-01-02" }] });
   assert.equal(legacy?.trips[0].ruleId, "schengen");
   assert.deepEqual(normalizeState(legacy), legacy);
+});
+
+test("parseRuleNumbers rejeita valores incompletos em vez de ajustá-los", () => {
+  assert.deepEqual(parseRuleNumbers({ limit: "90", windowDays: "180", warningAt: "75" }), { ok: true, value: { limit: 90, windowDays: 180, warningAt: 75 } });
+  assert.deepEqual(parseRuleNumbers({ limit: " 60 ", windowDays: "180", warningAt: "" }), { ok: true, value: { limit: 60, windowDays: 180, warningAt: 0 } });
+  // Exactly at the edges is allowed: window equal to the limit, alert equal to the limit.
+  assert.equal(parseRuleNumbers({ limit: "90", windowDays: "90", warningAt: "90" }).ok, true);
+  for (const input of [
+    { limit: "", windowDays: "180", warningAt: "75" }, // campo apagado para redigitar
+    { limit: "0", windowDays: "180", warningAt: "0" },
+    { limit: "9.5", windowDays: "180", warningAt: "0" },
+    { limit: "-1", windowDays: "180", warningAt: "0" },
+    { limit: "90", windowDays: "89", warningAt: "0" }, // janela menor que o limite
+    { limit: "90", windowDays: "180", warningAt: "91" },
+    { limit: "90", windowDays: "99999", warningAt: "0" },
+  ]) assert.equal(parseRuleNumbers(input).ok, false, JSON.stringify(input));
+});
+
+test("apenas regras do catálogo com região própria são embutidas", () => {
+  assert.equal(isBuiltInRule(brazil), true);
+  assert.equal(isBuiltInRule(schengen), true);
+  assert.equal(isBuiltInRule(thailand), false);
 });
