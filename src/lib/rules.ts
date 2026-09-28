@@ -69,6 +69,32 @@ export function statusFor(rule: Rule, trips: Trip[], asOf: string): RuleStatus {
   const limit = limitOn(safeRule, asOf);
   return { rule: safeRule, asOf, used, limit, remaining: Math.max(0, limit - used), windowStart, status: levelFor(safeRule, used, limit) };
 }
+/** The count on `date` if `stay` (a planned stay under this rule) were saved: the days in the period and where it starts. */
+export function statusWithStay(rule: Rule, trips: Trip[], stay: { start: string; end: string } | null, date: string): RuleStatus {
+  return statusFor(rule, stay ? trips.concat({ id: "planned-stay", ruleId: rule.id, region: rule.region, country: "", start: stay.start, end: stay.end }) : trips, date);
+}
+export type CountedRun = { start: string; end: string; days: number; leavesFrom: string; leavesUntil: string };
+/**
+ * Days counted on `date`, as runs of consecutive days, each with the dates its days stop counting: `windowDays` days after
+ * each day for a rolling rule, 1 January for a calendar-year rule.
+ */
+export function countedRuns(rule: Rule, trips: Trip[], date: string): CountedRun[] {
+  const safeRule = sanitizeRule(rule);
+  const from = periodStart(safeRule, date);
+  const days = new Set<string>();
+  for (const trip of trips) {
+    if (!tripMatchesRule(trip, safeRule) || trip.start > trip.end || !overlaps(trip, from, date)) continue;
+    for (let day = trip.start > from ? trip.start : from; day <= trip.end && day <= date; day = addDays(day, 1)) days.add(day);
+  }
+  const leaves = (day: string) => isCalendarYear(safeRule) ? (Number(date.slice(0, 4)) + 1) + "-01-01" : addDays(day, safeRule.windowDays);
+  const runs: CountedRun[] = [];
+  for (const day of [...days].sort()) {
+    const last = runs[runs.length - 1];
+    if (last && addDays(last.end, 1) === day) { last.end = day; last.days++; last.leavesUntil = leaves(day); }
+    else runs.push({ start: day, end: day, days: 1, leavesFrom: leaves(day), leavesUntil: leaves(day) });
+  }
+  return runs;
+}
 export type YearBudget = { year: number; used: number; limit: number; remaining: number; over: boolean };
 /** Days of a calendar-year rule in `year`, counting every saved trip (past and planned). */
 export function yearBudget(rule: Rule, trips: Trip[], year: number): YearBudget {

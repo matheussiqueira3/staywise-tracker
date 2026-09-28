@@ -19,7 +19,7 @@
 
 - **Mobile first.** No desktop-only UX.
 - **No explicit planning mode.** Selection is immediate.
-- **Calendar browsing is unbounded.** Navigate freely to any month; the counting period remains bounded by each rule (Itália: the calendar year, reset on 1 January; Brasil 360 days; Schengen 180 days).
+- **Calendar browsing is unbounded.** Navigate freely to any month; the counting period remains bounded by each rule (Itália 180 days; Brasil 360 days; Schengen 180 days).
 - **Future first.** The main job is a calculator for the days ahead. Past trips are inputs that make future answers correct, not a dashboard.
 - **Travel days count for both places.** Entry and exit days count; one trip may end on the day the next one (in another country) starts, and that day counts for both.
 - **Business logic is separate.** `src/lib` contains all calculations; UI never re-derives stay status.
@@ -46,8 +46,10 @@
 
 The workspace belongs to Andrew, a Brazilian and Italian citizen who is tax resident in the Bahamas. Visa limits do not apply to him; the question is **tax presence**:
 
-- **Itália** — resident from the 183rd day of presence in the calendar year (184th in leap years), fractions of a day counting as whole days (art. 2 TUIR, D.Lgs. 209/2023). The rule allows 182 days (183 in leap years).
-- **Brasil** — 180 days in any 360, a conservative day budget chosen by the owner (the legal test for a Brazilian national is intent and the Declaração de Saída Definitiva, not a day count).
+- **Itália** — 90 days in any rolling 180, the owner's day budget (decided 2026-09-28).
+- **Brasil** — 180 days in any rolling 360, the owner's day budget.
+- The engine also supports calendar-year rules (e.g. Italy's statutory 183 days per calendar year); none is in the catalog today.
+- The counting must be visible: the app shows the window it counts, today's count, and when counted days leave the window.
 - **Schengen** (90 in 180) stays in the catalog for other passports, off by default.
 
 Stored data carries a format `version`. Version 2 moved stays in Italy recorded under the old "schengen" region to the Italy rule.
@@ -71,9 +73,9 @@ type Rule = {
   countryCode: string;
   region: "brazil" | "italy" | "schengen" | "other";   // custom rules use "other"
   kind?: "rolling" | "calendar-year";   // default "rolling"
-  limit: number;          // most days allowed: Itália 182, Brasil 180, Schengen 90
-  leapYearLimit?: number; // calendar-year rules: most days allowed in a leap year (Itália 183)
-  windowDays: number;     // rolling window: Brasil 360, Schengen 180 days (unused by calendar-year rules)
+  limit: number;          // most days allowed: Itália 90, Brasil 180, Schengen 90
+  leapYearLimit?: number; // calendar-year rules: most days allowed in a leap year
+  windowDays: number;     // rolling window: Itália 180, Brasil 360, Schengen 180 days (unused by calendar-year rules)
   warningAt: number;
 };
 

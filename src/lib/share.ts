@@ -46,12 +46,15 @@ function normalizeTrip(value: unknown, index: number, rules: Rule[]): Trip | nul
   }
   return { id: typeof item.id === "string" && item.id ? item.id : "imported-" + index, ...(ruleId ? { ruleId } : {}), region, country: typeof item.country === "string" && item.country.trim() ? item.country.trim() : item.region === "brazil" ? "Brazil" : item.region === "italy" || item.region === "schengen" ? "Italy" : "Other", start: item.start, end: item.end, notes: typeof item.notes === "string" ? item.notes.slice(0, 500) : undefined };
 }
-function normalizeRule(value: unknown, fallback: Rule): Rule {
+/** A catalog rule keeps the catalog's numbers (only its label and alert are the user's); a custom rule keeps its own. */
+function normalizeRule(value: unknown, fallback: Rule, catalog = false): Rule {
   if (!value || typeof value !== "object") return fallback;
   const item = value as Partial<Rule>;
-  const limit = typeof item.limit === "number" && Number.isFinite(item.limit) ? Math.max(1, Math.floor(item.limit)) : fallback.limit;
-  const windowDays = typeof item.windowDays === "number" && Number.isFinite(item.windowDays) ? Math.max(1, Math.floor(item.windowDays)) : fallback.windowDays;
-  const warningAt = typeof item.warningAt === "number" && Number.isFinite(item.warningAt) ? Math.min(limit, Math.max(0, Math.floor(item.warningAt))) : fallback.warningAt;
+  const limit = !catalog && typeof item.limit === "number" && Number.isFinite(item.limit) ? Math.max(1, Math.floor(item.limit)) : fallback.limit;
+  const windowDays = !catalog && typeof item.windowDays === "number" && Number.isFinite(item.windowDays) ? Math.max(1, Math.floor(item.windowDays)) : fallback.windowDays;
+  const storedWarning = typeof item.warningAt === "number" && Number.isFinite(item.warningAt) ? Math.max(0, Math.floor(item.warningAt)) : fallback.warningAt;
+  // An alert above the limit (e.g. kept from an older, larger catalog limit) falls back to the catalog's alert.
+  const warningAt = storedWarning <= limit ? storedWarning : catalog ? fallback.warningAt : limit;
   return { ...fallback, label: typeof item.label === "string" && item.label.trim() ? item.label.trim().slice(0, 80) : fallback.label, countryCode: typeof item.countryCode === "string" && item.countryCode.trim() ? item.countryCode.trim().slice(0, 20).toUpperCase() : fallback.countryCode, limit, windowDays, warningAt };
 }
 export function normalizeState(value: unknown): TrackerState | null {
@@ -66,7 +69,7 @@ export function normalizeState(value: unknown): TrackerState | null {
     if (typeof item.id !== "string" || !item.id.trim() || item.id.length > MAX_RULE_ID_CHARS || typeof item.label !== "string" || !validRegion(item.region)) return null;
     // Built-in rules keep their region; every other rule is a custom one, which lives in "other".
     const builtIn = CATALOG_RULES.find((rule) => rule.id === item.id);
-    if (builtIn) return normalizeRule(item, { ...builtIn, label: item.label });
+    if (builtIn) return normalizeRule(item, { ...builtIn, label: item.label }, true);
     // A custom rule has no defaults to fall back on: its numbers must be present.
     if (![item.limit, item.windowDays, item.warningAt].every((field) => typeof field === "number" && Number.isFinite(field))) return null;
     return normalizeRule(item, { id: item.id, label: item.label, countryCode: typeof item.countryCode === "string" ? item.countryCode : item.id.toUpperCase(), region: "other", limit: 1, windowDays: 1, warningAt: 0 });

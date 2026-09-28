@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { addDays, earliestEntryFor, findConflicts, formatDate, inclusiveDays, isCalendarYear, limitOn, limitPhrase, maxSafeStay, maxStayLength, ruleForTrip, simulateTrip, statusFor, usageLabel, yearBudget } from "@/lib/rules";
+import { addDays, earliestEntryFor, findConflicts, formatDate, inclusiveDays, countedRuns, isCalendarYear, limitOn, limitPhrase, maxSafeStay, maxStayLength, ruleForTrip, simulateTrip, statusFor, statusWithStay, usageLabel, yearBudget } from "@/lib/rules";
 import type { AffectedTrip, MaxSafeStay, TripSimulation, TripStatus } from "@/lib/rules";
 import type { Region, Rule, Trip } from "@/lib/types";
 
@@ -39,6 +39,29 @@ export function TripStatusBadge({ status }: { status?: TripStatus }) {
   return null;
 }
 
+/** "91 dias entre 17 mai e 13 nov": the count on `date` with a planned stay, as shown to explain a limit. */
+function countFact(rule: Rule, trips: Trip[], stay: { start: string; end: string }, date: string): string {
+  const count = statusWithStay(rule, trips, stay, date);
+  return plural(count.used, "dia", "dias") + " entre " + shortDate(count.windowStart) + " e " + shortDate(date) + " (máximo " + count.limit + ")";
+}
+
+/** Plain-language explanation of how a rule counts, with today's numbers and when the counted days stop counting. */
+function HowItWorks({ rule, trips, today }: { rule: Rule; trips: Trip[]; today: string }) {
+  const status = statusFor(rule, trips, today);
+  const runs = countedRuns(rule, trips, today);
+  const calendar = isCalendarYear(rule);
+  return <details className="how-it-works">
+    <summary>Como a conta de {rule.label} funciona</summary>
+    <ol>
+      <li>{calendar ? "Em cada dia, o app soma os dias em " + rule.label + " desde 1º de janeiro." : "Em cada dia, o app olha para trás " + rule.windowDays + " dias, incluindo o próprio dia, e soma os dias em " + rule.label + "."} Entrada, saída e dia de viagem contam como dias inteiros.</li>
+      <li>O máximo é {status.limit} dias: chegar a {status.limit} é permitido, {status.limit + 1} passa do limite.</li>
+      <li>Hoje: de {longDate(status.windowStart)} até {longDate(today)} são <strong>{plural(status.used, "dia", "dias")}</strong>, então restam <strong>{status.remaining}</strong>.</li>
+      {runs.length > 0 && <li>{calendar ? "Os dias deste ano saem da conta em 1º de janeiro:" : "Cada dia sai da conta " + rule.windowDays + " dias depois:"}<ul>{runs.map((run) => <li key={run.start}>{run.start === run.end ? shortDate(run.start) : shortDate(run.start) + " — " + shortDate(run.end)} ({plural(run.days, "dia", "dias")}) → {run.leavesFrom === run.leavesUntil ? "sai em " + longDate(run.leavesFrom) : "saem entre " + shortDate(run.leavesFrom) + " e " + longDate(run.leavesUntil)}</li>)}</ul></li>}
+      <li>Para planejar, toque no dia de entrada: o app mostra o último dia em que a conta fica em {status.limit} ou menos, contando também as viagens já planejadas.</li>
+    </ol>
+  </details>;
+}
+
 /**
  * Days left under one rule. A calendar-year rule shows this year and next, counting planned trips too, since what matters
  * is the year's total; a rolling rule shows today's window.
@@ -59,10 +82,10 @@ function BudgetCard({ rule, trips, today, active }: { rule: Rule; trips: Trip[];
   }
   const status = statusFor(rule, trips, today);
   return <div className={"status-card " + status.status + (active ? " active" : "")}>
-    <div className="status-header">{rule.label} · hoje</div>
+    <div className="status-header">{rule.label} · últimos {rule.windowDays} dias</div>
     <div className="status-numbers"><strong>{status.used}<small> / {status.limit}</small></strong></div>
-    <div className="status-label">{left(status.remaining, status.status === "over")}</div>
-    <div className="status-next">{rule.limit} a cada {rule.windowDays} dias</div>
+    <div className="status-label">{left(status.remaining, status.status === "over")} hoje</div>
+    <div className="status-next">Conta de {shortDate(status.windowStart)} até hoje</div>
   </div>;
 }
 
@@ -76,10 +99,12 @@ function WorsenedLines({ items }: { items: AffectedTrip[] }) {
   return <>{items.map((item) => <small key={item.trip.id} className="forecast-affected">Sua viagem de {shortDate(item.trip.start)} — {longDate(item.trip.end)} ({item.trip.country}) já excede o limite; este plano piora em {plural(item.excessDays, "dia", "dias")}.</small>)}</>;
 }
 
-function ForecastCard({ forecast, rule }: { forecast: MaxSafeStay; rule: Rule }) {
+function ForecastCard({ forecast, rule, trips }: { forecast: MaxSafeStay; rule: Rule; trips: Trip[] }) {
+  const why = forecast.limitedBy === "limit" && forecast.firstOverDate ? <small>Por quê: em {shortDate(forecast.firstOverDate)} seriam {countFact(rule, trips, { start: forecast.start, end: forecast.firstOverDate }, forecast.firstOverDate)}.</small> : null;
   if (!forecast.lastSafeDate) return <div className="forecast-card danger" role="status">
     <span className="forecast-region">{rule.label}</span>
     <strong>Sem dias disponíveis nesta entrada</strong>
+    {why}
     <LimitReason forecast={forecast} />
     {forecast.limitedBy !== "later-trip" && <small>{isCalendarYear(rule) ? "Todos os " + limitOn(rule, forecast.start) + " dias de " + forecast.start.slice(0, 4) + " já estão em uso." : "Todos os " + rule.limit + " dias da janela de " + rule.windowDays + " já estão em uso."}</small>}
   </div>;
@@ -87,6 +112,7 @@ function ForecastCard({ forecast, rule }: { forecast: MaxSafeStay; rule: Rule })
     <span className="forecast-region">{rule.label} · entrada {shortDate(forecast.start)}</span>
     <strong>Pode ficar até <span className="forecast-date">{longDate(forecast.lastSafeDate)}</span></strong>
     <small>{plural(forecast.daysAvailable, "dia disponível", "dias disponíveis")}. Toque no dia de saída.</small>
+    {why}
     {forecast.firstWarningDate && <small className="forecast-warning-line">Entra na zona de alerta em {longDate(forecast.firstWarningDate)} ({rule.warningAt} de {limitOn(rule, forecast.firstWarningDate)} dias).</small>}
     <LimitReason forecast={forecast} />
   </div>;
@@ -207,7 +233,7 @@ export function CalendarPlanner({ trips, rules, today, initialRuleId, tripStatus
   const firstAffected = simulation?.affectedTrips[0] ?? simulation?.worsenedTrips[0];
   const blocking = forecast?.limitedBy === "later-trip" ? forecast.blockingTrip?.trip : undefined;
   const verdict: { tone: string; text: string; detail?: string } | null = conflict ? { tone: "danger", text: "Conflito com " + conflict.country }
-    : simulation ? (simulation.firstOverDate ? { tone: "danger", text: (rule && isCalendarYear(rule) ? simulation.firstOverDate.slice(0, 4) + ": excede" : "Excede") + " em " + plural(simulation.excessDays, "dia", "dias"), detail: "Passa do limite em " + shortDate(simulation.firstOverDate) + (lastSafe ? " · último dia seguro " + shortDate(lastSafe) : "") }
+    : simulation ? (simulation.firstOverDate ? { tone: "danger", text: (rule && isCalendarYear(rule) ? simulation.firstOverDate.slice(0, 4) + ": excede" : "Excede") + " em " + plural(simulation.excessDays, "dia", "dias"), detail: "Em " + shortDate(simulation.firstOverDate) + ": " + (rule && candidate ? countFact(rule, trips, candidate, simulation.firstOverDate) : "acima do limite") + (lastSafe ? " · último dia seguro " + shortDate(lastSafe) : "") }
       : simulation.affectedTrips.length > 0 ? { tone: "danger", text: "Afeta viagem futura", detail: firstAffected ? "A viagem de " + shortDate(firstAffected.trip.start) + " (" + firstAffected.trip.country + ") passaria a exceder em " + plural(firstAffected.excessDays, "dia", "dias") : undefined }
       : simulation.worsenedTrips.length > 0 ? { tone: "danger", text: "Piora viagem futura", detail: firstAffected ? "A viagem de " + shortDate(firstAffected.trip.start) + " (" + firstAffected.trip.country + ") já excede; piora em " + plural(firstAffected.excessDays, "dia", "dias") : undefined }
       : { tone: simulation.firstWarningDate ? "warning" : "safe", text: "Dentro do limite", detail: rule ? "Pico de " + usageLabel(rule, simulation.maxUsed, simulation.maxUsedDate) : undefined })
@@ -304,8 +330,9 @@ export function CalendarPlanner({ trips, rules, today, initialRuleId, tripStatus
       {rules.map((item) => <BudgetCard key={item.id} rule={item} trips={trips} today={today} active={item.id === selectedRuleId} />)}
     </div>
     {rule ? <EarliestEntry key={rule.id} rule={rule} trips={trips} today={today} onApply={applySelection} /> : !start && <div className="forecast-card neutral"><strong>Sem regra de limite</strong><small>Períodos sem regra são registrados para evitar sobreposição, mas não contam para nenhum limite.</small></div>}
+    {rule && <HowItWorks key={"how-" + rule.id} rule={rule} trips={trips} today={today} />}
     {!start && rule && <p className="planner-hint">Toque no dia de entrada para ver até quando pode ficar.</p>}
-    {start && !end && forecast && rule && <ForecastCard forecast={forecast} rule={rule} />}
+    {start && !end && forecast && rule && <ForecastCard forecast={forecast} rule={rule} trips={trips} />}
     {start && !end && !rule && <div className="forecast-card neutral" role="status"><strong>Entrada em {shortDate(start)}</strong><small>Toque no dia de saída.</small></div>}
     {candidate && <SelectionSummary days={selectedDays} end={candidate.end} simulation={simulation} forecast={forecast} conflict={conflict} rule={rule} onAdjust={adjustEnd} />}
     <div className="month-jump-row">
