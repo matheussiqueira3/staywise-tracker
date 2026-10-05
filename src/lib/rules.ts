@@ -27,7 +27,7 @@ export function daysInWindow(trips: Trip[], rule: Pick<Rule, "id" | "region">, s
   return occupied.size;
 }
 /** Upper bound for a rule's window and limit (10 years), so absurd settings cannot freeze the UI. */
-const MAX_RULE_DAYS = 3660;
+export const MAX_RULE_DAYS = 3660;
 function sanitizeRule(rule: Rule): Rule {
   const limit = Math.min(MAX_RULE_DAYS, Math.max(1, Math.floor(rule.limit) || 1));
   const safe: Rule = { ...rule, limit, windowDays: Math.min(MAX_RULE_DAYS, Math.max(1, Math.floor(rule.windowDays) || 1)), warningAt: Math.min(limit, Math.max(0, Math.floor(rule.warningAt) || 0)) };
@@ -47,8 +47,14 @@ export function limitOn(rule: Rule, date: string): number {
 export function periodStart(rule: Rule, date: string): string { return isCalendarYear(rule) ? date.slice(0, 4) + "-01-01" : addDays(date, -(rule.windowDays - 1)); }
 /** Last day whose count a day of presence on `date` changes. */
 function reachEnd(rule: Rule, date: string): string { return isCalendarYear(rule) ? date.slice(0, 4) + "-12-31" : addDays(date, rule.windowDays - 1); }
-/** Longest single stay worth asking about: a calendar-year stay can use the rest of one year and the next year's budget. */
-export function maxStayLength(rule: Rule): number { return isCalendarYear(rule) ? 2 * (rule.leapYearLimit ?? rule.limit) : rule.limit; }
+/**
+ * Longest single stay worth asking about. `null` means the rolling rule has no finite ceiling for a continuous stay
+ * because its window is no longer than its limit.
+ */
+export function maxStayLength(rule: Rule): number | null {
+  if (isCalendarYear(rule)) return 2 * (rule.leapYearLimit ?? rule.limit);
+  return rule.windowDays > rule.limit ? rule.limit : null;
+}
 /** Short description of the rule, e.g. "90 dias a cada 180" or "182 dias por ano civil (183 em ano bissexto)". */
 export function describeRule(rule: Rule): string {
   if (!isCalendarYear(rule)) return rule.limit + " dias a cada " + rule.windowDays;
@@ -180,7 +186,8 @@ export type TripSimulation = TripAnalysis & {
 export type MaxSafeStay = {
   start: string;
   lastSafeDate: string | null;
-  daysAvailable: number;
+  /** Finite number of safe days; null means this rule does not impose a finite ceiling on a continuous stay. */
+  daysAvailable: number | null;
   firstOverDate?: string;
   /** "limit": staying one more day exceeds the rule. "later-trip": it would push a saved later trip over. */
   limitedBy?: "limit" | "later-trip";
@@ -381,9 +388,14 @@ const MIN_STAY_SEARCH_DAYS = 366;
  */
 export function maxSafeStay(rule: Rule, trips: Trip[], region: Region, entryDate: string): MaxSafeStay {
   const safeRule = sanitizeRule(rule);
-  // When the window is longer than the limit, a continuous stay goes over by day limit + 1, so search that far.
-  // Otherwise the stay can never exceed the limit on its own and one year is enough.
-  const searchDays = safeRule.windowDays > safeRule.limit ? Math.max(MIN_STAY_SEARCH_DAYS, safeRule.limit) : MIN_STAY_SEARCH_DAYS;
+  const counts = region === safeRule.region;
+  // A stay outside the rule never counts. Likewise, for a rolling rule whose window is no longer than its limit,
+  // even occupying every day in the window cannot exceed the rule. Do not invent a one-year "maximum" in either case.
+  if (!counts || (!isCalendarYear(safeRule) && safeRule.windowDays <= safeRule.limit)) {
+    return { start: entryDate, lastSafeDate: null, daysAvailable: null };
+  }
+  // Finite rules are guaranteed to break within this bound (or earlier because of a saved later trip).
+  const searchDays = Math.max(MIN_STAY_SEARCH_DAYS, maxStayLength(safeRule) ?? safeRule.limit);
   const searchEnd = addDays(entryDate, searchDays);
   const reach = reachEnd(safeRule, searchEnd);
   const { from, to } = extendedRange(trips, safeRule, periodStart(safeRule, entryDate), reach, entryDate, reach);
@@ -392,7 +404,6 @@ export function maxSafeStay(rule: Rule, trips: Trip[], region: Region, entryDate
   const limits = limitSeries(ledger, safeRule);
   const used = baseUsed.slice();
   const entryIndex = inclusiveDays(from, entryDate) - 1;
-  const counts = region === safeRule.region;
   let lastSafeDate: string | null = null;
   let firstWarningDate: string | undefined;
 
@@ -434,7 +445,7 @@ function placeKey(trip: Pick<Trip, "ruleId" | "region">): string { return trip.r
 
 /** A travel day: one trip ends on the day the other starts. That day counts for both places (fractions of a day count). */
 function sharesOnlyTravelDay(a: Pick<Trip, "start" | "end">, b: Pick<Trip, "start" | "end">): boolean {
-  return (a.end === b.start && a.start < a.end && b.start < b.end) || (b.end === a.start && b.start < b.end && a.start < a.end);
+  return a.end === b.start || b.end === a.start;
 }
 /**
  * Saved trips overlapping the candidate's dates. Being in two places on the same day is a conflict, except the travel day
@@ -454,7 +465,8 @@ export function findConflicts(trips: Trip[], candidate: Candidate): TripConflict
 export function earliestEntryFor(rule: Rule, trips: Trip[], lengthDays: number, from: string, horizonDays = 730): { start: string; end: string } | null {
   const safeRule = sanitizeRule(rule);
   const length = Math.floor(lengthDays);
-  if (!(length >= 1) || length > maxStayLength(safeRule)) return null;
+  const maximum = maxStayLength(safeRule);
+  if (!(length >= 1) || (maximum !== null && length > maximum)) return null;
   for (let day = 0; day <= horizonDays; day++) {
     const start = addDays(from, day);
     const candidate = { region: safeRule.region, ruleId: safeRule.id, start, end: addDays(start, length - 1) };
@@ -509,13 +521,58 @@ export type LegPlan = {
   next: Projection[];
 };
 
-/** Arriving under `rule` on a date: until when the stay can last, or when days come back if there are none. */
-export type Projection = { rule: Rule; lastSafeDate: string | null; days: number; returnsOn: string | null };
+/** Arriving under `rule` on a date: until when the stay can last, or when a stay becomes possible if there are no days. */
+export type Projection = {
+  rule: Rule;
+  lastSafeDate: string | null;
+  /** Finite safe days; null means the rule itself has no finite ceiling and no saved trip cuts the stay short. */
+  days: number | null;
+  returnsOn: string | null;
+  /** Saved stay in another place that prevents entry or caps this projection. */
+  blockingTrip?: Trip;
+};
 
-/** The stay possible from `date` under `rule`, and, when none, the first later day with at least one day free. */
-export function projectArrival(rule: Rule, trips: Trip[], date: string): Projection {
+type ProjectionCore = Pick<Projection, "lastSafeDate" | "days" | "blockingTrip">;
+
+/**
+ * Projection on exactly one arrival day. Besides the rule budget, respect the saved physical itinerary:
+ * - a trip ending on the arrival day is a valid travel day;
+ * - arriving during a different trip gives zero days;
+ * - a future trip in another place caps this stay on that trip's first day (the shared travel day).
+ */
+function projectArrivalOnDate(rule: Rule, trips: Trip[], date: string): ProjectionCore {
   const forecast = maxSafeStay(rule, trips, rule.region, date);
-  return { rule, lastSafeDate: forecast.lastSafeDate, days: forecast.daysAvailable, returnsOn: forecast.lastSafeDate ? null : earliestFit(rule, trips, 1, date) };
+  if (forecast.daysAvailable === 0) return { lastSafeDate: null, days: 0 };
+
+  const key = placeKey({ ruleId: rule.id, region: rule.region });
+  const otherPlaces = trips
+    .filter((trip) => placeKey(trip) !== key && trip.end >= date)
+    .sort((a, b) => a.start.localeCompare(b.start) || a.end.localeCompare(b.end));
+
+  let geographicEnd: string | null = null;
+  let blockingTrip: Trip | undefined;
+  for (const trip of otherPlaces) {
+    if (trip.end === date) continue; // leave this place and enter the projected one on the same travel day
+    if (trip.start < date && trip.end > date) return { lastSafeDate: null, days: 0, blockingTrip: trip };
+    if (trip.start === date && trip.end > date) { geographicEnd = date; blockingTrip = trip; break; }
+    if (trip.start > date) { geographicEnd = trip.start; blockingTrip = trip; break; }
+  }
+
+  if (geographicEnd && (!forecast.lastSafeDate || geographicEnd < forecast.lastSafeDate)) {
+    return { lastSafeDate: geographicEnd, days: inclusiveDays(date, geographicEnd), blockingTrip };
+  }
+  return { lastSafeDate: forecast.lastSafeDate, days: forecast.daysAvailable };
+}
+
+/** The stay possible from `date`; when none, find the first later day with at least one physically possible day. */
+export function projectArrival(rule: Rule, trips: Trip[], date: string): Projection {
+  const core = projectArrivalOnDate(rule, trips, date);
+  if (core.days !== 0) return { rule, ...core, returnsOn: null };
+  for (let offset = 1; offset <= FIT_SEARCH_DAYS; offset++) {
+    const start = addDays(date, offset);
+    if (projectArrivalOnDate(rule, trips, start).days !== 0) return { rule, ...core, returnsOn: start };
+  }
+  return { rule, ...core, returnsOn: null };
 }
 
 export type DayOverview = { date: string; stay?: Trip; stayRule?: Rule; rules: { rule: Rule; count: RuleStatus; projection: Projection }[] };
@@ -568,7 +625,8 @@ const FIT_SEARCH_DAYS = 730;
 /** First start on or after `from` where a stay of `days` under `rule` is safe (itself and later saved trips), or null. */
 function earliestFit(rule: Rule, trips: Trip[], days: number, from: string): string | null {
   const safeRule = sanitizeRule(rule);
-  if (days > maxStayLength(safeRule)) return null;
+  const maximum = maxStayLength(safeRule);
+  if (maximum !== null && days > maximum) return null;
   for (let offset = 1; offset <= FIT_SEARCH_DAYS; offset++) {
     const start = addDays(from, offset);
     if (simulate(safeRule, trips, { ruleId: safeRule.id, region: safeRule.region, start, end: addDays(start, days - 1) }, true).safe) return start;
@@ -577,9 +635,9 @@ function earliestFit(rule: Rule, trips: Trip[], days: number, from: string): str
 }
 
 /**
- * The saved plan ahead as an itinerary to edit: the first trip not yet over and the trips that follow it without a gap
- * (starting on its last day or the day after). Arrival dates are kept; each leg runs until the next arrival, so the day of
- * departure counts for the place being left (the travel-day rule).
+ * The saved plan ahead as an itinerary to edit: the first trip not yet over and the trips that follow it on the same
+ * travel day. Legacy records whose next stay starts the following day stop the editable chain; the planner cannot represent
+ * that boundary without changing a stored date, so preserving history wins over silently adding a day.
  */
 export function itineraryFromTrips(rules: Rule[], trips: Trip[], today: string): { start: string; legs: ItineraryLeg[]; tripIds: string[] } | null {
   const ahead = trips.filter((trip) => trip.end >= today && trip.start <= trip.end).sort((a, b) => a.start.localeCompare(b.start) || a.end.localeCompare(b.end));
@@ -587,7 +645,7 @@ export function itineraryFromTrips(rules: Rule[], trips: Trip[], today: string):
   const chain = [ahead[0]];
   for (const trip of ahead.slice(1)) {
     const last = chain[chain.length - 1];
-    if (trip.start < last.end || trip.start > addDays(last.end, 1)) break;
+    if (trip.start !== last.end) break;
     chain.push(trip);
   }
   const legs = chain.map((trip, index) => {
