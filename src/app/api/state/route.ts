@@ -54,7 +54,7 @@ export async function POST(request: Request) {
 
     // The comparison and SET must be one Redis command. Two devices may both pass the read above; EVAL lets only the
     // writer whose base revision still matches commit. Upstash exposes EVAL directly in @upstash/redis.
-    const committed = await redis.eval<number>(ATOMIC_WRITE_SCRIPT, [STATE_KEY], [body.write.baseRevision, JSON.stringify(result.next)]);
+    const committed = Number(await redis.eval(ATOMIC_WRITE_SCRIPT, [STATE_KEY], [body.write.baseRevision, JSON.stringify(result.next)]));
     if (committed === -1) return Response.json({ error: INVALID_STORED }, { status: 500 });
     if (committed !== 1) {
       const current = readStored(await redis.get<unknown>(STATE_KEY));
