@@ -88,7 +88,7 @@ function DaysInput({ value, label, onChange }: { value: number; label: string; o
 function NextStep({ leg }: { leg: LegPlan }) {
   const others = leg.next.filter((item) => item.rule.id !== leg.rule?.id);
   if (others.length === 0) return null;
-  return <p className="leg-next"><span>Ao sair, em {shortDate(leg.end)}:</span> {others.map((item) => <strong key={item.rule.id} className={item.lastSafeDate ? "" : "none"}>{item.rule.label} {item.lastSafeDate ? plural(item.days, "dia", "dias") + " (até " + shortDate(item.lastSafeDate) + ")" : item.returnsOn ? "só a partir de " + shortDate(item.returnsOn) : "sem dias"}</strong>)}</p>;
+  return <p className="leg-next"><span>Ao sair, em {shortDate(leg.end)}:</span> {others.map((item) => <strong key={item.rule.id} className={item.days === 0 ? "none" : ""}>{item.rule.label} {item.days === null ? "sem limite contínuo" : item.lastSafeDate ? plural(item.days, "dia", "dias") + " (até " + shortDate(item.lastSafeDate) + ")" : item.returnsOn ? "só a partir de " + shortDate(item.returnsOn) : "sem dias"}</strong>)}</p>;
 }
 
 function Verdict({ leg }: { leg: LegPlan }) {
