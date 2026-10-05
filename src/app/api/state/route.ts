@@ -5,6 +5,21 @@ import { parseWriteBody, readStored, resolveWrite, type StoredState } from "@/li
 const STATE_KEY = "staywise:shared-state:v1";
 const INVALID_STORED = "O workspace contém dados inválidos.";
 
+const ATOMIC_WRITE_SCRIPT = `
+local current = redis.call("GET", KEYS[1])
+local expected = tonumber(ARGV[1])
+if not current then
+  if expected ~= 0 then return 0 end
+  redis.call("SET", KEYS[1], ARGV[2])
+  return 1
+end
+local ok, decoded = pcall(cjson.decode, current)
+if not ok or type(decoded) ~= "table" or type(decoded.revision) ~= "number" then return -1 end
+if decoded.revision ~= expected then return 0 end
+redis.call("SET", KEYS[1], ARGV[2])
+return 1
+`;
+
 function getRedis() {
   return Redis.fromEnv();
 }
@@ -34,11 +49,19 @@ export async function POST(request: Request) {
     const read = readStored(await redis.get<unknown>(STATE_KEY));
     // Same as GET: a write must not silently replace stored data that fails to parse.
     if (read.kind === "invalid") return Response.json({ error: INVALID_STORED }, { status: 500 });
-    // Read-compare-write is not atomic; acceptable for a single-person workspace, where two devices
-    // saving within the same few milliseconds is the only way to lose the check.
     const result = resolveWrite(read.kind === "ok" ? read.stored : null, body.write);
     if (!result.ok) return Response.json({ error: "Os dados mudaram em outro dispositivo.", ...result.current }, { status: 409 });
-    await redis.set(STATE_KEY, result.next);
+
+    // The comparison and SET must be one Redis command. Two devices may both pass the read above; EVAL lets only the
+    // writer whose base revision still matches commit. Upstash exposes EVAL directly in @upstash/redis.
+    const committed = await redis.eval<number>(ATOMIC_WRITE_SCRIPT, [STATE_KEY], [body.write.baseRevision, JSON.stringify(result.next)]);
+    if (committed === -1) return Response.json({ error: INVALID_STORED }, { status: 500 });
+    if (committed !== 1) {
+      const current = readStored(await redis.get<unknown>(STATE_KEY));
+      if (current.kind === "invalid") return Response.json({ error: INVALID_STORED }, { status: 500 });
+      if (current.kind === "ok") return Response.json({ error: "Os dados mudaram em outro dispositivo.", ...current.stored }, { status: 409 });
+      return Response.json({ error: "Os dados mudaram em outro dispositivo." }, { status: 409 });
+    }
     return Response.json({ revision: result.next.revision, saved: true });
   } catch {
     return Response.json({ error: "Não foi possível salvar." }, { status: 503 });
