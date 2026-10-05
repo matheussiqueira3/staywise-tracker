@@ -16,7 +16,7 @@ import "./annual-planner.css";
 type Tab = "calendar" | "trips" | "more";
 const TABS = [["calendar", "Calendário", "□"], ["trips", "Viagens", "▦"], ["more", "Mais", "☷"]] as const;
 type ToastState = { message: string; tone?: "warning"; undo?: { label: string; action: () => void } };
-type SyncStatus = "loading" | "saving" | "saved" | "offline";
+type SyncStatus = "loading" | "saving" | "saved" | "offline" | "shared";
 const EMPTY_STATE: TrackerState = { version: STATE_VERSION, trips: [], rules: DEFAULT_RULES };
 const LOCAL_STATE_KEY = "staywise-state-v2";
 const LOCAL_META_KEY = "staywise-sync-v1";
@@ -71,7 +71,8 @@ function NowCard({ trip, rules, trips, status, onOpen }: { trip: Trip; rules: Ru
   return <button className={"next-trip-card now " + (danger ? "danger" : "")} onClick={onOpen}>
     <div className="trip-header"><strong>Agora em {displayCountry(trip.country)}</strong><small>saída planejada {shortDate(trip.end)}</small></div>
     {rule && lastSafe && <div className="trip-dates">Pode ficar até <b>{formatFullDate(lastSafe)}</b></div>}
-    {rule && !lastSafe && <div className="trip-dates">{blocking ? "Sem dias seguros por causa de uma viagem futura" : "Sem dias disponíveis em " + rule.label}</div>}
+    {rule && !lastSafe && forecast?.daysAvailable === null && <div className="trip-dates">Sem limite contínuo imposto por {rule.label}</div>}
+    {rule && !lastSafe && forecast?.daysAvailable !== null && <div className="trip-dates">{blocking ? "Sem dias seguros por causa de uma viagem futura" : "Sem dias disponíveis em " + rule.label}</div>}
     {blocking && <small className="now-limit-reason">Limitado pela viagem de {shortDate(blocking.trip.start)} — {shortDate(blocking.trip.end)} ({displayCountry(blocking.trip.country)}).</small>}
     {!rule && <div className="trip-dates">Sem regra de limite para este país</div>}
     {ownOver && <div className="trip-alert danger"><strong>⚠ A saída planejada excede o limite em {plural(status?.excessDays ?? 0, "dia", "dias")}</strong></div>}
@@ -111,6 +112,8 @@ export default function Home() {
   const baselineRef = useRef<TrackerState>(EMPTY_STATE);
   const latestRef = useRef<TrackerState>(EMPTY_STATE);
   const canSyncRef = useRef(false);
+  // A hash link is an explicit snapshot. It must win over the workspace without overwriting the recipient's server/local data.
+  const sharedSnapshotRef = useRef(false);
   const saveChainRef = useRef<Promise<void>>(Promise.resolve());
   // Null during prerender and hydration; everything date-dependent waits for the client value.
   const today = useToday();
@@ -155,13 +158,23 @@ export default function Home() {
     let active = true;
     const localValue = storageGet(LOCAL_STATE_KEY);
     const local = localValue ? decodeState(localValue) : null;
+    const shared = window.location.hash ? decodeState(window.location.hash.slice(1)) : null;
     function fallBackToLocal(status: SyncStatus) {
-      const shared = window.location.hash ? decodeState(window.location.hash.slice(1)) : null;
-      const next = shared || local;
-      if (next) { baselineRef.current = next; setState(next); }
+      if (local) { baselineRef.current = local; setState(local); }
       setSyncStatus(status);
     }
     async function loadState() {
+      // Shared URLs are portable snapshots, not invitations to mutate the single shared Redis workspace.
+      if (shared) {
+        sharedSnapshotRef.current = true;
+        canSyncRef.current = false;
+        baselineRef.current = shared;
+        latestRef.current = shared;
+        setState(shared);
+        setSyncStatus("shared");
+        setHydrated(true);
+        return;
+      }
       try {
         const response = await fetch("/api/state", { cache: "no-store", headers: requestHeaders() });
         if (!active) return;
@@ -211,6 +224,7 @@ export default function Home() {
   useEffect(() => {
     if (!hydrated) return;
     latestRef.current = state;
+    if (sharedSnapshotRef.current) return;
     storageSet(LOCAL_STATE_KEY, encodeState(state));
     if (state === baselineRef.current) return;
     writeMeta({ revision: revisionRef.current, dirty: true });
@@ -263,7 +277,7 @@ export default function Home() {
     setEditing(false);
     notify("Viagem removida", { label: "Desfazer", action: () => setState((current) => current.trips.some((trip) => trip.id === id) ? current : { ...current, trips: current.trips.concat(removed) }) });
   }
-  const syncLabel = syncStatus === "loading" ? "Carregando" : syncStatus === "saving" ? "Salvando" : syncStatus === "saved" ? "Salvo" : "Modo local — não sincronizado";
+  const syncLabel = syncStatus === "loading" ? "Carregando" : syncStatus === "saving" ? "Salvando" : syncStatus === "saved" ? "Salvo" : syncStatus === "shared" ? "Cópia compartilhada" : "Modo local — não sincronizado";
   return <div className="app-shell"><header className="topbar"><div className="brand"><span className="brand-mark">S</span><span>staywise</span></div><div className="topbar-actions"><span className={"sync-label sync-" + syncStatus}><i className="sync-dot" />{syncLabel}</span><button className="icon-button" aria-label="Copiar link com os dados" title="Copiar link com os dados" onClick={share}>↗</button></div></header><main className="content-wrap"><section className="welcome"><div><p className="eyebrow">CALCULADORA DE PERMANÊNCIA</p><h1>Olá, Andrew.</h1><p className="welcome-copy">Planeje quanto tempo ficar em cada lugar. O Staywise calcula o máximo de cada destino.</p></div><div className="today-chip" aria-busy={!today}>{today ? formatFullDate(today) : "Carregando data…"}</div></section><button className="plan-cta" onClick={() => { setPlanFrom(null); setPlanning("new"); }} disabled={!today}><span className="plan-cta-icon" aria-hidden="true">✈︎</span><span><strong>Planejar viagem</strong><small>Quanto tempo posso ficar em cada lugar?</small></span><b aria-hidden="true">→</b></button>{ahead && <button className="text-button plan-edit" onClick={() => setPlanning("edit")}>Editar o plano à frente →</button>}{nowTrip && <NowCard trip={nowTrip} rules={state.rules} trips={state.trips} status={tripStatus.get(nowTrip.id)} onOpen={() => setEditing(nowTrip)} />}{nextTrip && <NextTripCard trip={nextTrip} rules={state.rules} trips={state.trips} onOpen={() => setEditing(nextTrip)} />}{futureOverTrip && <button className="alert-banner over" onClick={() => setEditing(futureOverTrip)}><span className="alert-icon">!</span><span><strong>Viagem de {formatFullDate(futureOverTrip.start)} ({displayCountry(futureOverTrip.country)}) excede em {plural(futureOverExcess, "dia", "dias")}</strong><small>Toque para revisar as datas.</small></span><b>→</b></button>}{risk && tab !== "calendar" && <button className={"alert-banner " + risk.status} onClick={() => setTab("calendar")}><span className="alert-icon">!</span><span><strong>{risk.rule.label}: {risk.status === "over" ? "limite ultrapassado" : "perto do limite"}</strong><small>{risk.used} de {risk.limit} dias usados.</small></span><b>→</b></button>}<div className="tab-panel">{TABS.map(([id, label, icon]) => <button key={id} aria-current={tab === id ? "page" : undefined} className={"tab " + (tab === id ? "active" : "")} onClick={() => setTab(id)}><span className="tab-icon">{icon}</span>{label}</button>)}</div>{!today && tab !== "more" && <p className="planner-hint" role="status">Carregando…</p>}{today && tab === "calendar" && <CalendarPlanner key={hydrated ? "ready" : "loading"} trips={trips} rules={state.rules} today={today} tripStatus={tripStatus} focus={calendarFocus} onOpen={setEditing} onPlanFrom={(date, ruleId) => { setPlanFrom({ date, ruleId }); setPlanning("new"); }} />}{today && tab === "trips" && <TripsView trips={trips} today={today} tripStatus={tripStatus} onOpen={setEditing} onGoCalendar={() => setPlanning("new")} onEditPlan={ahead ? () => setPlanning("edit") : undefined} />}{tab === "more" && <Settings state={state} onChange={setState} onShare={share} onExport={exportBackup} onNotify={notify} />}</main><nav className="bottom-nav">{TABS.map(([id, label, icon]) => <button key={id} aria-current={tab === id ? "page" : undefined} className={tab === id ? "active" : ""} onClick={() => setTab(id)}><span>{icon}</span>{label}</button>)}</nav>{planning && today && <ItineraryPlanner key={planning + (planFrom?.date ?? "")} rules={state.rules} trips={planning === "edit" && ahead ? state.trips.filter((trip) => !ahead.tripIds.includes(trip.id)) : state.trips} today={today} initial={planning === "edit" && ahead ? ahead : undefined} startAt={planning === "new" ? planFrom ?? undefined : undefined} onClose={() => setPlanning(false)} onSave={saveItinerary} />}{editing !== false && today && <TripModal trip={editing} rules={state.rules} today={today} onClose={() => setEditing(false)} onSave={saveTrip} onDelete={editing ? removeTrip : undefined} trips={state.trips} />}{toast && <div className="toast" role="status"><span>{toast.tone === "warning" ? "! " : "✓ "}{toast.message}</span>{toast.undo && <button className="toast-undo" onClick={() => { toast.undo?.action(); setToast(null); }}>Desfazer</button>}</div>}</div>;
 }
 
