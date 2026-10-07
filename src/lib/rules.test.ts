@@ -136,7 +136,7 @@ test("maxSafeStay: encontra o último dia permitido", () => {
   const result = maxSafeStay(schengen, [existingTrip], "schengen", baseDate);
 
   assert(result.lastSafeDate);
-  assert(result.daysAvailable > 0);
+  assert(result.daysAvailable !== null && result.daysAvailable > 0);
   assert.equal(result.start, baseDate);
 });
 
