@@ -1,4 +1,4 @@
-import { CATALOG_RULES, DEFAULT_RULES, parseDate, toDateKey } from "./rules";
+import { CATALOG_RULES, DEFAULT_RULES, MAX_RULE_DAYS, inclusiveDays, parseDate, toDateKey } from "./rules";
 import type { Region, Rule, TrackerState, Trip } from "./types";
 /** Size cap for a decoded share link and, via the route, for a synced state. */
 export const MAX_STATE_CHARS = 700_000;
@@ -30,6 +30,7 @@ function normalizeTrip(value: unknown, index: number, rules: Rule[]): Trip | nul
   if (!value || typeof value !== "object") return null;
   const item = value as Partial<Trip>;
   if (!validRegion(item.region) || !validDate(item.start) || !validDate(item.end) || item.start > item.end) return null;
+  if (inclusiveDays(item.start, item.end) > MAX_RULE_DAYS) return null;
   // A trip naming a rule must name an existing one, and takes that rule's region. Legacy trips without a ruleId in a
   // built-in region are moved onto that built-in rule; "other" trips without a ruleId stay rule-less (counted by no rule).
   let ruleId: string | undefined;
@@ -50,12 +51,21 @@ function normalizeTrip(value: unknown, index: number, rules: Rule[]): Trip | nul
 function normalizeRule(value: unknown, fallback: Rule, catalog = false): Rule {
   if (!value || typeof value !== "object") return fallback;
   const item = value as Partial<Rule>;
+  const kind = catalog ? fallback.kind : item.kind === "rolling" || item.kind === "calendar-year" ? item.kind : fallback.kind;
   const limit = !catalog && typeof item.limit === "number" && Number.isFinite(item.limit) ? Math.max(1, Math.floor(item.limit)) : fallback.limit;
   const windowDays = !catalog && typeof item.windowDays === "number" && Number.isFinite(item.windowDays) ? Math.max(1, Math.floor(item.windowDays)) : fallback.windowDays;
   const storedWarning = typeof item.warningAt === "number" && Number.isFinite(item.warningAt) ? Math.max(0, Math.floor(item.warningAt)) : fallback.warningAt;
   // An alert above the limit (e.g. kept from an older, larger catalog limit) falls back to the catalog's alert.
   const warningAt = storedWarning <= limit ? storedWarning : catalog ? fallback.warningAt : limit;
-  return { ...fallback, label: typeof item.label === "string" && item.label.trim() ? item.label.trim().slice(0, 80) : fallback.label, countryCode: typeof item.countryCode === "string" && item.countryCode.trim() ? item.countryCode.trim().slice(0, 20).toUpperCase() : fallback.countryCode, limit, windowDays, warningAt };
+  const leapYearLimit = kind === "calendar-year"
+    ? !catalog && typeof item.leapYearLimit === "number" && Number.isFinite(item.leapYearLimit)
+      ? Math.max(limit, Math.floor(item.leapYearLimit))
+      : fallback.leapYearLimit
+    : undefined;
+  const normalized: Rule = { ...fallback, label: typeof item.label === "string" && item.label.trim() ? item.label.trim().slice(0, 80) : fallback.label, countryCode: typeof item.countryCode === "string" && item.countryCode.trim() ? item.countryCode.trim().slice(0, 20).toUpperCase() : fallback.countryCode, limit, windowDays, warningAt, ...(kind ? { kind } : {}) };
+  if (leapYearLimit !== undefined) normalized.leapYearLimit = leapYearLimit;
+  else delete normalized.leapYearLimit;
+  return normalized;
 }
 export function normalizeState(value: unknown): TrackerState | null {
   if (!value || typeof value !== "object") return null;
@@ -70,8 +80,14 @@ export function normalizeState(value: unknown): TrackerState | null {
     // Built-in rules keep their region; every other rule is a custom one, which lives in "other".
     const builtIn = CATALOG_RULES.find((rule) => rule.id === item.id);
     if (builtIn) return normalizeRule(item, { ...builtIn, label: item.label }, true);
-    // A custom rule has no defaults to fall back on: its numbers must be present.
-    if (![item.limit, item.windowDays, item.warningAt].every((field) => typeof field === "number" && Number.isFinite(field))) return null;
+    // A custom rule has no defaults to fall back on: its numbers and semantic kind must be valid.
+    if (typeof item.limit !== "number" || !Number.isInteger(item.limit) || item.limit < 1 || item.limit > MAX_RULE_DAYS) return null;
+    if (typeof item.windowDays !== "number" || !Number.isInteger(item.windowDays) || item.windowDays < 1 || item.windowDays > MAX_RULE_DAYS) return null;
+    if (typeof item.warningAt !== "number" || !Number.isInteger(item.warningAt) || item.warningAt < 0 || item.warningAt > item.limit) return null;
+    if (item.kind !== undefined && item.kind !== "rolling" && item.kind !== "calendar-year") return null;
+    if (item.kind !== "calendar-year" && item.windowDays < item.limit) return null;
+    if (item.kind !== "calendar-year" && item.leapYearLimit !== undefined) return null;
+    if (item.kind === "calendar-year" && item.leapYearLimit !== undefined && (typeof item.leapYearLimit !== "number" || !Number.isInteger(item.leapYearLimit) || item.leapYearLimit < item.limit || item.leapYearLimit > MAX_RULE_DAYS)) return null;
     return normalizeRule(item, { id: item.id, label: item.label, countryCode: typeof item.countryCode === "string" ? item.countryCode : item.id.toUpperCase(), region: "other", limit: 1, windowDays: 1, warningAt: 0 });
   });
   if (rules.some((rule) => !rule) || new Set(rules.filter((rule): rule is Rule => Boolean(rule)).map((rule) => rule.id)).size !== rules.length) return null;

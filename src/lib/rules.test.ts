@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { CATALOG_RULES, DEFAULT_RULES, addDays, countedRuns, dailyCounts, dayOverview, displayCountry, itineraryFromTrips, itineraryTrips, planItinerary, describeRule, limitOn, statusWithStay, yearBudget, analyzeTrip, currentTrip, daysInWindow, earliestEntryFor, findConflicts, formatDate, formatFullDate, inclusiveDays, isBuiltInRule, isoToday, maxSafeStay, parseDate, parseRuleNumbers, ruleForTrip, simulateTrip, statusFor, tripMatchesRule, tripStatuses, upcomingTrips } from "./rules";
+import { CATALOG_RULES, DEFAULT_RULES, MAX_RULE_DAYS, addDays, countedRuns, dailyCounts, dayOverview, displayCountry, itineraryFromTrips, itineraryTrips, planItinerary, describeRule, limitOn, statusWithStay, yearBudget, analyzeTrip, currentTrip, daysInWindow, earliestEntryFor, findConflicts, formatDate, formatFullDate, inclusiveDays, isBuiltInRule, isoToday, maxSafeStay, parseDate, parseRuleNumbers, ruleForTrip, simulateTrip, statusFor, tripMatchesRule, tripStatuses, upcomingTrips } from "./rules";
 import { STATE_VERSION, decodeState, encodeState, normalizeState } from "./share";
 import { seedState } from "@/data/seed";
 import type { Rule } from "./types";
@@ -221,9 +221,11 @@ test("acceptance: overlap geográfico bloqueado", () => {
   assert.equal(conflicts.sameRegion.length, 0);
 });
 
-test("findConflicts: dias adjacentes não conflitam; mesma região é listada à parte; a própria viagem é ignorada", () => {
+test("findConflicts: dias adjacentes e dias de viagem não conflitam; mesma região é listada à parte; a própria viagem é ignorada", () => {
   const brazil1 = trip("br1", "brazil", "2026-09-10", "2026-09-20");
   assert.equal(findConflicts([brazil1], trip("sch1", "schengen", "2026-09-21", "2026-09-25")).otherRegion.length, 0);
+  assert.equal(findConflicts([brazil1], trip("sch-travel", "schengen", "2026-09-20", "2026-09-20")).otherRegion.length, 0);
+  assert.equal(findConflicts([trip("one", "brazil", "2026-09-20", "2026-09-20")], trip("sch2", "schengen", "2026-09-20", "2026-09-25")).otherRegion.length, 0);
   assert.deepEqual(findConflicts([brazil1], trip("br2", "brazil", "2026-09-20", "2026-09-22")).sameRegion.map((item) => item.id), ["br1"]);
   assert.equal(findConflicts([brazil1], { ...brazil1, region: "schengen" }).otherRegion.length, 0);
 });
@@ -638,8 +640,9 @@ test("maxSafeStay suporta janela maior que 366 dias", () => {
   assert(elapsed < 50, "maxSafeStay took " + elapsed.toFixed(1) + " ms");
   // Built-in rule stretched the same way.
   assert.equal(maxSafeStay({ ...brazil, windowDays: 800, limit: 700 }, [], "brazil", "2026-09-18").daysAvailable, 700);
-  // A window no longer than the limit never goes over on its own: the search stops after one year.
-  assert.equal(maxSafeStay({ ...brazil, windowDays: 100, limit: 100 }, [], "brazil", "2026-09-18").daysAvailable, 367);
+  // A window no longer than the limit never goes over on its own: report that honestly instead of inventing a 367-day cap.
+  const unlimited = maxSafeStay({ ...brazil, windowDays: 100, limit: 100 }, [], "brazil", "2026-09-18");
+  assert.deepEqual([unlimited.daysAvailable, unlimited.lastSafeDate, unlimited.limitedBy], [null, null, undefined]);
 });
 
 test("maxSafeStay: configurações absurdas continuam rápidas", () => {
@@ -821,6 +824,34 @@ test("estado produzido pelo app sobrevive a normalizeState e ao link de comparti
   assert.equal(legacy?.trips[0].ruleId, "italy");
   assert.equal(legacy?.trips[0].region, "italy");
   assert.deepEqual(normalizeState(legacy), legacy);
+});
+
+test("estado preserva semântica de regra customizada por ano civil", () => {
+  const calendarRule: Rule = { id: "custom-tax-year", label: "Ano fiscal", countryCode: "TAX", region: "other", kind: "calendar-year", limit: 182, leapYearLimit: 183, windowDays: 365, warningAt: 150 };
+  const state = {
+    version: STATE_VERSION,
+    rules: [...DEFAULT_RULES, calendarRule],
+    trips: [{ id: "cy", ruleId: calendarRule.id, region: "other" as const, country: "Teste", start: "2028-01-01", end: "2028-01-10" }],
+  };
+  const normalized = normalizeState(JSON.parse(JSON.stringify(state)));
+  assert(normalized);
+  const stored = normalized.rules.find((rule) => rule.id === calendarRule.id);
+  assert.deepEqual(stored, calendarRule);
+  assert.equal(limitOn(stored!, "2028-06-01"), 183);
+  assert.deepEqual(decodeState(encodeState(state)), normalized);
+  assert.equal(normalizeState({ rules: [{ ...calendarRule, kind: "invalid" }], trips: [] }), null);
+  assert.equal(normalizeState({ rules: [{ ...calendarRule, leapYearLimit: 181 }], trips: [] }), null);
+});
+
+test("limites de segurança impedem períodos absurdos de travar o motor", () => {
+  const tooLong = { id: "huge", ruleId: "brazil", region: "brazil" as const, country: "Brazil", start: "2026-01-01", end: addDays("2026-01-01", MAX_RULE_DAYS) };
+  assert.equal(normalizeState({ rules: DEFAULT_RULES, trips: [tooLong] }), null);
+
+  const unbounded: Rule = { ...thailand, limit: 100, windowDays: 100 };
+  assert.equal(earliestEntryFor(unbounded, [], MAX_RULE_DAYS + 1, "2027-01-01"), null);
+  const plan = planItinerary([unbounded], [], "2027-01-01", [{ ruleId: unbounded.id, country: "Tailândia", days: Number.MAX_SAFE_INTEGER }]);
+  assert.equal(plan[0].days, MAX_RULE_DAYS);
+  assert.equal(plan[0].end, addDays("2027-01-01", MAX_RULE_DAYS - 1));
 });
 
 test("parseRuleNumbers rejeita valores incompletos em vez de ajustá-los", () => {
@@ -1046,21 +1077,26 @@ test("planItinerary: destino que não cabe diz a partir de quando cabe", () => {
   assert.deepEqual([moved[2].start, moved[2].status === "safe" || moved[2].status === "warning"], ["2027-06-30", true]);
 });
 
-test("itineraryFromTrips: o plano salvo à frente vira itinerário, mantendo as chegadas", () => {
+test("itineraryFromTrips: não altera datas legadas em que o próximo país começa no dia seguinte", () => {
   const trips = [
     italyTrip("past", "2026-05-01", "2026-05-10"),
     italyTrip("it", "2026-11-08", "2026-11-16"),
     { ...trip("br", "brazil", "2026-11-17", "2027-03-27"), ruleId: "brazil" },
     { id: "bs", region: "other" as const, country: "Bahamas", start: "2027-03-27", end: "2027-04-10" },
-    italyTrip("later", "2027-06-01", "2027-06-10"), // depois de um intervalo: fica fora
   ];
   const loaded = itineraryFromTrips(DEFAULT_RULES, trips, "2026-09-28")!;
   assert.equal(loaded.start, "2026-11-08");
-  assert.deepEqual(loaded.tripIds, ["it", "br", "bs"]);
-  // Itália vai até a chegada ao Brasil (17 nov conta para os dois); o Brasil já terminava no dia da chegada às Bahamas.
-  assert.deepEqual(loaded.legs, [{ ruleId: "italy", country: "Italy", days: 10 }, { ruleId: "brazil", country: "Brazil", days: 131 }, { ruleId: undefined, country: "Bahamas", days: 15 }]);
-  const replanned = planItinerary(DEFAULT_RULES, trips.filter((item) => !loaded.tripIds.includes(item.id)), loaded.start, loaded.legs);
-  assert.deepEqual(replanned.map((leg) => leg.start), ["2026-11-08", "2026-11-17", "2027-03-27"]);
+  assert.deepEqual(loaded.tripIds, ["it"]);
+  assert.deepEqual(loaded.legs, [{ ruleId: "italy", country: "Italy", days: 9 }]);
+  const replanned = itineraryTrips(planItinerary(DEFAULT_RULES, trips.filter((item) => !loaded.tripIds.includes(item.id)), loaded.start, loaded.legs), "edited");
+  assert.deepEqual([replanned[0].start, replanned[0].end], ["2026-11-08", "2026-11-16"]);
+
+  const sameDay = itineraryFromTrips(DEFAULT_RULES, [
+    italyTrip("it2", "2027-01-01", "2027-01-10"),
+    { ...trip("br2", "brazil", "2027-01-10", "2027-02-01"), ruleId: "brazil" },
+  ], "2026-12-01")!;
+  assert.deepEqual(sameDay.tripIds, ["it2", "br2"]);
+  assert.deepEqual(sameDay.legs.map((leg) => leg.days), [10, 23]);
   assert.equal(itineraryFromTrips(DEFAULT_RULES, [trips[0]], "2026-09-28"), null);
 });
 
@@ -1072,6 +1108,15 @@ test("dayOverview: conta e projeção de cada país num dia", () => {
   const empty = dayOverview(DEFAULT_RULES, [], "2027-01-01");
   assert.equal(empty.stay, undefined);
   assert.deepEqual(empty.rules.map((item) => [item.rule.id, item.count.used, item.projection.days, item.projection.returnsOn]), [["brazil", 0, 180, null], ["italy", 0, 90, null]]);
+
+  const occupied = dayOverview(DEFAULT_RULES, [{ ...trip("br-occupied", "brazil", "2027-01-01", "2027-01-20"), ruleId: "brazil" }], "2027-01-10")
+    .rules.find((item) => item.rule.id === "italy")!.projection;
+  assert.deepEqual([occupied.days, occupied.lastSafeDate, occupied.returnsOn, occupied.blockingTrip?.id], [0, null, "2027-01-20", "br-occupied"]);
+
+  const future = dayOverview(DEFAULT_RULES, [{ ...trip("br-future", "brazil", "2027-01-20", "2027-02-01"), ruleId: "brazil" }], "2027-01-10")
+    .rules.find((item) => item.rule.id === "italy")!.projection;
+  assert.deepEqual([future.days, future.lastSafeDate, future.blockingTrip?.id], [11, "2027-01-20", "br-future"]);
+
   const trips = [italyTrip("winter", "2027-01-01", "2027-03-31")]; // 90 dias
   const inside = dayOverview(DEFAULT_RULES, trips, "2027-02-01");
   assert.equal(inside.stay?.id, "winter");

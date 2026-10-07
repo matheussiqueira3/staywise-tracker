@@ -94,9 +94,11 @@ function BudgetCard({ rule, trips, today, active }: { rule: Rule; trips: Trip[];
 
 /** One country's line in the day panel: its count that day and the projection of a stay from that day. */
 function ProjectionLine({ rule, used, limit, projection, active, onSelect }: { rule: Rule; used: number; limit: number; projection: Projection; active: boolean; onSelect: () => void }) {
-  const answer = projection.lastSafeDate ? "pode ficar até " + shortDate(projection.lastSafeDate) + " (" + plural(projection.days, "dia", "dias") + ")"
+  const answer = projection.days === null ? "sem limite contínuo por esta regra"
+    : projection.lastSafeDate ? "pode ficar até " + shortDate(projection.lastSafeDate) + " (" + plural(projection.days, "dia", "dias") + ")"
     : projection.returnsOn ? "sem dias livres · voltam em " + shortDate(projection.returnsOn) : "sem dias livres nos próximos 2 anos";
-  return <button className={"day-rule" + (active ? " active" : "") + (projection.lastSafeDate ? "" : " none")} aria-pressed={active} onClick={onSelect}>
+  const unavailable = projection.days === 0;
+  return <button className={"day-rule" + (active ? " active" : "") + (unavailable ? " none" : "")} aria-pressed={active} onClick={onSelect}>
     <span className="day-rule-name">{rule.label}</span>
     <span className="day-rule-count">{used}/{limit} na conta</span>
     <span className="day-rule-answer">{answer}</span>
