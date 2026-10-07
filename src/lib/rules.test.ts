@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { CATALOG_RULES, DEFAULT_RULES, addDays, countedRuns, dailyCounts, dayOverview, displayCountry, itineraryFromTrips, itineraryTrips, planItinerary, describeRule, limitOn, statusWithStay, yearBudget, analyzeTrip, currentTrip, daysInWindow, earliestEntryFor, findConflicts, formatDate, formatFullDate, inclusiveDays, isBuiltInRule, isoToday, maxSafeStay, parseDate, parseRuleNumbers, ruleForTrip, simulateTrip, statusFor, tripMatchesRule, tripStatuses, upcomingTrips } from "./rules";
+import { CATALOG_RULES, DEFAULT_RULES, MAX_RULE_DAYS, addDays, countedRuns, dailyCounts, dayOverview, displayCountry, itineraryFromTrips, itineraryTrips, planItinerary, describeRule, limitOn, statusWithStay, yearBudget, analyzeTrip, currentTrip, daysInWindow, earliestEntryFor, findConflicts, formatDate, formatFullDate, inclusiveDays, isBuiltInRule, isoToday, maxSafeStay, parseDate, parseRuleNumbers, ruleForTrip, simulateTrip, statusFor, tripMatchesRule, tripStatuses, upcomingTrips } from "./rules";
 import { STATE_VERSION, decodeState, encodeState, normalizeState } from "./share";
 import { seedState } from "@/data/seed";
 import type { Rule } from "./types";
@@ -824,6 +824,34 @@ test("estado produzido pelo app sobrevive a normalizeState e ao link de comparti
   assert.equal(legacy?.trips[0].ruleId, "italy");
   assert.equal(legacy?.trips[0].region, "italy");
   assert.deepEqual(normalizeState(legacy), legacy);
+});
+
+test("estado preserva semântica de regra customizada por ano civil", () => {
+  const calendarRule: Rule = { id: "custom-tax-year", label: "Ano fiscal", countryCode: "TAX", region: "other", kind: "calendar-year", limit: 182, leapYearLimit: 183, windowDays: 365, warningAt: 150 };
+  const state = {
+    version: STATE_VERSION,
+    rules: [...DEFAULT_RULES, calendarRule],
+    trips: [{ id: "cy", ruleId: calendarRule.id, region: "other" as const, country: "Teste", start: "2028-01-01", end: "2028-01-10" }],
+  };
+  const normalized = normalizeState(JSON.parse(JSON.stringify(state)));
+  assert(normalized);
+  const stored = normalized.rules.find((rule) => rule.id === calendarRule.id);
+  assert.deepEqual(stored, calendarRule);
+  assert.equal(limitOn(stored!, "2028-06-01"), 183);
+  assert.deepEqual(decodeState(encodeState(state)), normalized);
+  assert.equal(normalizeState({ rules: [{ ...calendarRule, kind: "invalid" }], trips: [] }), null);
+  assert.equal(normalizeState({ rules: [{ ...calendarRule, leapYearLimit: 181 }], trips: [] }), null);
+});
+
+test("limites de segurança impedem períodos absurdos de travar o motor", () => {
+  const tooLong = { id: "huge", ruleId: "brazil", region: "brazil" as const, country: "Brazil", start: "2026-01-01", end: addDays("2026-01-01", MAX_RULE_DAYS) };
+  assert.equal(normalizeState({ rules: DEFAULT_RULES, trips: [tooLong] }), null);
+
+  const unbounded: Rule = { ...thailand, limit: 100, windowDays: 100 };
+  assert.equal(earliestEntryFor(unbounded, [], MAX_RULE_DAYS + 1, "2027-01-01"), null);
+  const plan = planItinerary([unbounded], [], "2027-01-01", [{ ruleId: unbounded.id, country: "Tailândia", days: Number.MAX_SAFE_INTEGER }]);
+  assert.equal(plan[0].days, MAX_RULE_DAYS);
+  assert.equal(plan[0].end, addDays("2027-01-01", MAX_RULE_DAYS - 1));
 });
 
 test("parseRuleNumbers rejeita valores incompletos em vez de ajustá-los", () => {

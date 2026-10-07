@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { addDays, dailyCounts, displayCountry, formatDate, inclusiveDays, itineraryTrips, planItinerary, ruleForTrip, usageLabel } from "@/lib/rules";
+import { MAX_RULE_DAYS, addDays, dailyCounts, displayCountry, formatDate, inclusiveDays, itineraryTrips, planItinerary, ruleForTrip, usageLabel } from "@/lib/rules";
 import { HowItWorks, MonthCalendar, type DayState } from "@/components/calendar-planner";
 import type { ItineraryLeg, LegPlan } from "@/lib/rules";
 import type { Rule, Trip } from "@/lib/types";
@@ -77,10 +77,10 @@ function FitsFrom({ leg, previous, onStayLonger, onInsertStop }: { leg: LegPlan;
 /** Number of days: the field can be cleared and retyped; only whole numbers from 1 change the plan. */
 function DaysInput({ value, label, onChange }: { value: number; label: string; onChange: (days: number) => void }) {
   const [draft, setDraft] = useState<string | null>(null);
-  return <input type="number" inputMode="numeric" min="1" value={draft ?? String(value)} aria-label={label} onBlur={() => setDraft(null)} onChange={(event) => {
+  return <input type="number" inputMode="numeric" min="1" max={MAX_RULE_DAYS} value={draft ?? String(value)} aria-label={label} onBlur={() => setDraft(null)} onChange={(event) => {
     setDraft(event.target.value);
     const days = Number(event.target.value);
-    if (Number.isInteger(days) && days >= 1) onChange(days);
+    if (Number.isInteger(days) && days >= 1 && days <= MAX_RULE_DAYS) onChange(days);
   }} />;
 }
 

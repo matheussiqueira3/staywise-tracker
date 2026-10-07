@@ -466,7 +466,7 @@ export function earliestEntryFor(rule: Rule, trips: Trip[], lengthDays: number, 
   const safeRule = sanitizeRule(rule);
   const length = Math.floor(lengthDays);
   const maximum = maxStayLength(safeRule);
-  if (!(length >= 1) || (maximum !== null && length > maximum)) return null;
+  if (!(length >= 1) || length > MAX_RULE_DAYS || (maximum !== null && length > maximum)) return null;
   for (let day = 0; day <= horizonDays; day++) {
     const start = addDays(from, day);
     const candidate = { region: safeRule.region, ruleId: safeRule.id, start, end: addDays(start, length - 1) };
@@ -600,7 +600,7 @@ export function planItinerary(rules: Rule[], trips: Trip[], start: string, legs:
   const laidOut: { rule?: Rule; country: string; start: string; end: string; days: number }[] = [];
   let legStart = start;
   for (const leg of legs) {
-    const days = Math.max(1, Math.floor(leg.days) || 1);
+    const days = Math.min(MAX_RULE_DAYS, Math.max(1, Math.floor(leg.days) || 1));
     const rule = leg.ruleId ? rules.find((item) => item.id === leg.ruleId) : undefined;
     const end = addDays(legStart, days - 1);
     laidOut.push({ rule, country: leg.country, start: legStart, end, days });
@@ -626,7 +626,7 @@ const FIT_SEARCH_DAYS = 730;
 function earliestFit(rule: Rule, trips: Trip[], days: number, from: string): string | null {
   const safeRule = sanitizeRule(rule);
   const maximum = maxStayLength(safeRule);
-  if (maximum !== null && days > maximum) return null;
+  if (days > MAX_RULE_DAYS || (maximum !== null && days > maximum)) return null;
   for (let offset = 1; offset <= FIT_SEARCH_DAYS; offset++) {
     const start = addDays(from, offset);
     if (simulate(safeRule, trips, { ruleId: safeRule.id, region: safeRule.region, start, end: addDays(start, days - 1) }, true).safe) return start;
